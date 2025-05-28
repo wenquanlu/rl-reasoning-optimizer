@@ -29,16 +29,12 @@ from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
 from trl import GRPOTrainer, ModelConfig, TrlParser, get_peft_config
 import torch
-from math import ceil
+
 logger = logging.getLogger(__name__)
 
 from transformers import TrainerCallback
-import sys
-import os
-sys.path.append(os.path.abspath("/home/wenquan-lu/Workspace/rl-reasoning-optimizer/StableSPAM"))
+
 import wandb
-from galore_torch import StableSPAM
-from open_r1.utils.train_utils import get_decay_parameter_names
 
 class GradientMonitorCallback(TrainerCallback):
     def __init__(self):
@@ -93,6 +89,7 @@ class GradientMonitorCallback(TrainerCallback):
             }
             if step + 1 >= 10:
                 info["grad/proportion_spike"] = proportion_outliers
+            print("grad/variance", grad_var_tensor.item())
             #print(f"[Step Debug] HF global_step: {state.global_step}, wandb.run.step: {wandb.run.step}")
             wandb.log(info, step=wandb.run.step + 1)
             #print(f"[Step {step + 1}] Pre-clip grad norm: {grad_norm_tensor.item():.4f} | Var: {grad_var_tensor.item():.4f}")
@@ -142,33 +139,11 @@ def main(script_args, training_args, model_args):
     ################
     tokenizer = get_tokenizer(model_args, training_args)
 
-    #train_dataset = dataset["train"]
-    #num_examples = len(train_dataset)
-
-    #total_T = ceil(num_examples / (training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps)) * int(training_args.num_train_epochs)
-
     ##############
     # Load model #
     ##############
     logger.info("*** Loading model ***")
     model = get_model(model_args, training_args)
-    decay_parameters = get_decay_parameter_names(model)
-    decay_value = getattr(training_args, "weight_decay", 0.0)
-    optimizer_grouped_parameters = [
-        {
-            "params": [
-                p for n, p in model.named_parameters() if (n in decay_parameters and p.requires_grad)
-            ],
-            "weight_decay": decay_value,
-        },
-        {
-            "params": [
-                p for n, p in model.named_parameters() if (n not in decay_parameters and p.requires_grad)
-            ],
-            "weight_decay": 0.0,
-        },
-    ]
-    optimizer = StableSPAM(optimizer_grouped_parameters, lr=2.0e-5,gamma1=0.7,gamma2=0.9,gamma3=0.999,update_proj_gap=100) # total_T=total_T
 
     # Get reward functions from the registry
     reward_funcs = get_reward_funcs(script_args)
@@ -206,7 +181,6 @@ def main(script_args, training_args, model_args):
         peft_config=get_peft_config(model_args),
         callbacks=call_backs,
         processing_class=tokenizer,
-        optimizers=(optimizer, None)
     )
 
     ###############
