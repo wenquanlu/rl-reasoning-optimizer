@@ -33,9 +33,194 @@ import torch
 logger = logging.getLogger(__name__)
 
 from transformers import TrainerCallback
-
+from transformers.data.data_collator import DataCollatorMixin
+from trl.models import unwrap_model_for_generation
+from trl.data_utils import apply_chat_template
+from transformers.trainer import EvalLoopOutput
+from tqdm import tqdm
+from trl.trainer.utils import pad
 import wandb
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
+from torch.utils.data import Dataset, DataLoader
+from transformers.utils import is_datasets_available
+from dataclasses import dataclass
+from open_r1.utils.math_eval import remove_boxed, last_boxed_only_string
+import re
+from transformers import GenerationConfig
 
+ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
+
+def extract_hash_answer(completion):
+    match = ANS_RE.search(completion)
+    if match:
+        match_str = match.group(1).strip()
+        match_str = match_str.replace(",", "")
+        return match_str
+    else:
+        return None
+
+def extract_boxed_answer(text):
+    boxed = last_boxed_only_string(text)
+    if boxed is None:
+        return None
+    answer = remove_boxed(boxed)
+    answer = answer.replace(",", "").strip()
+    return answer
+
+@dataclass
+class DataCollatorForInference(DataCollatorMixin):
+    pad_token_id: int
+    pad_to_multiple_of: Optional[int] = None
+    return_tensors: str = "pt"
+
+    def torch_call(self, examples):
+        # Convert to tensor
+        input_ids = [torch.tensor(example["input_ids"]) for example in examples]
+        attention_mask = [torch.ones_like(input_ids) for input_ids in input_ids]
+
+        # Pad
+        output = {}
+        output["input_ids"] = pad(
+            input_ids,
+            padding_value=self.pad_token_id,
+            padding_side="left",
+            pad_to_multiple_of=self.pad_to_multiple_of,
+        )
+        output["attention_mask"] = pad(
+            attention_mask, padding_value=0, padding_side="left", pad_to_multiple_of=self.pad_to_multiple_of
+        )
+
+        if "solution" in examples[0]:
+            output["solution"] = [example["solution"] for example in examples]
+
+        return output
+
+class GRPOEvalTrainer(GRPOTrainer):
+    # copied from Trainer.py with _remove_unused_columns commented
+    def get_eval_dataloader(self, eval_dataset: Optional[Union[str, Dataset]] = None) -> DataLoader:
+        """
+        Returns the evaluation [`~torch.utils.data.DataLoader`].
+
+        Subclass and override this method if you want to inject some custom behavior.
+
+        Args:
+            eval_dataset (`str` or `torch.utils.data.Dataset`, *optional*):
+                If a `str`, will use `self.eval_dataset[eval_dataset]` as the evaluation dataset. If a `Dataset`, will override `self.eval_dataset` and must implement `__len__`. If it is a [`~datasets.Dataset`], columns not accepted by the `model.forward()` method are automatically removed.
+        """
+        if eval_dataset is None and self.eval_dataset is None:
+            raise ValueError("Trainer: evaluation requires an eval_dataset.")
+
+        # If we have persistent workers, don't do a fork bomb especially as eval datasets
+        # don't change during training
+        dataloader_key = eval_dataset if isinstance(eval_dataset, str) else "eval"
+        if (
+            hasattr(self, "_eval_dataloaders")
+            and dataloader_key in self._eval_dataloaders
+            and self.args.dataloader_persistent_workers
+        ):
+            return self.accelerator.prepare(self._eval_dataloaders[dataloader_key])
+
+        eval_dataset = (
+            self.eval_dataset[eval_dataset]
+            if isinstance(eval_dataset, str)
+            else eval_dataset
+            if eval_dataset is not None
+            else self.eval_dataset
+        )
+        pad_token = self.processing_class.pad_token or self.processing_class.eos_token
+        pad_token_id = self.processing_class.convert_tokens_to_ids(pad_token)
+        data_collator = DataCollatorForInference(pad_token_id, None)
+
+        if is_datasets_available() and isinstance(eval_dataset, datasets.Dataset):
+            #eval_dataset = self._remove_unused_columns(eval_dataset, description="evaluation")
+            pass
+        else:
+            data_collator = self._get_collator_with_removed_columns(data_collator, description="evaluation")
+
+        dataloader_params = {
+            "batch_size": self.args.eval_batch_size,
+            "collate_fn": data_collator,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        if not isinstance(eval_dataset, torch.utils.data.IterableDataset):
+            #dataloader_params["sampler"] = self._get_eval_sampler(eval_dataset)
+            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+        
+        # accelerator.free_memory() will destroy the references, so
+        # we need to store the non-prepared version
+        eval_dataloader = DataLoader(eval_dataset, **dataloader_params)
+        if self.args.dataloader_persistent_workers:
+            if hasattr(self, "_eval_dataloaders"):
+                self._eval_dataloaders[dataloader_key] = eval_dataloader
+            else:
+                self._eval_dataloaders = {dataloader_key: eval_dataloader}
+
+        return self.accelerator.prepare(eval_dataloader)
+
+    def evaluation_loop(
+        self,
+        dataloader=None,
+        description: str = "Evaluation",
+        prediction_loss_only=None,
+        ignore_keys=None,
+        metric_key_prefix: str = "eval",
+    ) -> EvalLoopOutput:
+        self.model.eval()
+        eval_generation_config = GenerationConfig(
+            max_new_tokens=1024,
+            do_sample=False,
+            pad_token_id=self.processing_class.pad_token_id,
+            bos_token_id=self.processing_class.bos_token_id,
+            eos_token_id=self.processing_class.eos_token_id,
+            #cache_implementation=args.cache_implementation,
+        )
+        total = 0
+        correct = 0
+        preds = []
+        labels = []
+        with torch.no_grad():
+            with unwrap_model_for_generation(
+                self.model_wrapped, self.accelerator
+            ) as unwrapped_model:
+                
+                for batch in tqdm(dataloader, desc=description):
+                    prompt_ids = batch["input_ids"]
+                    prompt_completion_ids = unwrapped_model.generate(
+                        prompt_ids, attention_mask=batch["attention_mask"], generation_config=eval_generation_config
+                    )
+                    #print(prompt_completion_ids, "prompt completion ids!")
+
+                    # Compute prompt length and extract completion ids
+                    prompt_length = prompt_ids.size(1)
+                    completion_ids = prompt_completion_ids[:, prompt_length:]
+                    completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+                    #print(batch)
+                    targets = batch.get("solution", None)
+
+                    for pred, target in zip(completions, targets):
+                        extracted_pred = extract_boxed_answer(pred)
+                        if extracted_pred is not None:
+                            preds.append(extracted_pred.strip())
+                            labels.append(target.strip())
+                            if extracted_pred.strip() == target.strip():
+                                correct += 1
+                        total += 1
+                    # print(preds)
+                    # print(labels)
+                    # print(correct)
+        accuracy = correct / total if total > 0 else 0.0
+        metrics = {f"{metric_key_prefix}_accuracy": accuracy}
+        return EvalLoopOutput(
+            predictions=preds,
+            label_ids=labels,
+            metrics=metrics,
+            num_samples=total,
+        )
+            
 class GradientMonitorCallback(TrainerCallback):
     def __init__(self):
         self.grad_running_mean = None
@@ -133,19 +318,25 @@ def main(script_args, training_args, model_args):
     # Load the dataset
     dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config, cache_dir="/home/wenquan-lu/hf_dataset_cache")
 
-    ################
-    # Load tokenizer
-    ################
-    tokenizer = get_tokenizer(model_args, training_args)
+    def format_chat_gsm8k(example):
+        return {
+            "messages": [
+                {"role": "user", "content": example["question"].strip()},
+                {"role": "assistant", "content": example["answer"].strip()},
+            ]
+        }
 
-    ##############
-    # Load model #
-    ##############
-    logger.info("*** Loading model ***")
-    model = get_model(model_args, training_args)
+    # def make_conversation(example, prompt_column="question"):
+    #     prompt = []
 
-    # Get reward functions from the registry
-    reward_funcs = get_reward_funcs(script_args)
+    #     if training_args.system_prompt is not None:
+    #         prompt.append({"role": "system", "content": 'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.'})
+
+    #     if prompt_column not in example:
+    #         raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
+    #     solution = extract_hash_answer(example["answer"])
+    #     prompt.append({"role": "user", "content": example[prompt_column]})
+    #     return {"prompt": prompt, "solution": solution}
 
     # Format into conversation
     def make_conversation(example, prompt_column: str = script_args.dataset_prompt_column):
@@ -156,27 +347,79 @@ def main(script_args, training_args, model_args):
 
         if prompt_column not in example:
             raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
-
+        solution = extract_hash_answer(example["answer"])
         prompt.append({"role": "user", "content": example[prompt_column]})
-        return {"prompt": prompt}
+        return {"prompt": prompt, "solution": solution}
 
-    dataset = dataset.map(make_conversation)
+    #dataset = dataset.map(make_conversation)
 
-    for split in dataset:
-        if "messages" in dataset[split].column_names:
-            dataset[split] = dataset[split].remove_columns("messages")
+    train_dataset = dataset[script_args.dataset_train_split].map(make_conversation,
+                remove_columns=["question", "answer"])
+    eval_dataset = dataset[script_args.dataset_test_split].map(make_conversation, 
+                remove_columns=["question", "answer"])
+    ################
+    # Load tokenizer
+    ################
+    tokenizer = get_tokenizer(model_args, training_args)
+    tokenizer.padding_side = 'left'
+    print("tokenizer padding side:", tokenizer.padding_side )
+
+    eval_dataset = eval_dataset.map(
+        apply_chat_template,
+        fn_kwargs={"tokenizer": tokenizer}
+    )
+
+    #print(next(iter(eval_dataset['test'])), "222222")
+
+
+    def tokenize(example, processing_class):
+        prompts_text = example["prompt"]
+        prompt_inputs = processing_class(
+            text=prompts_text, return_tensors="pt", padding=False, truncation=False, add_special_tokens=False
+        )
+        #prompt_inputs = super()._prepare_inputs(prompt_inputs)
+        #prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
+        prompt_inputs['input_ids'] = prompt_inputs['input_ids'][:, -512 :].squeeze(0)
+        prompt_inputs['attention_mask'] = prompt_inputs['attention_mask'][:, -512 :].squeeze(0)
+        return prompt_inputs
+
+    eval_dataset = eval_dataset.map(
+        tokenize,
+        fn_kwargs={
+            "processing_class": tokenizer
+        },
+        remove_columns=["prompt"]
+    )
+
+    ##############
+    # Load model #
+    ##############
+    logger.info("*** Loading model ***")
+    model = get_model(model_args, training_args)
+
+    # Get reward functions from the registry
+    reward_funcs = get_reward_funcs(script_args)
+
+    # def extract_hash_answer(text: str) -> str | None:
+    #     if "####" not in text:
+    #         return None
+    #     return text.split("####")[1].strip()
+
+    # for split in dataset:
+    #     if "messages" in dataset[split].column_names:
+    #         dataset[split] = dataset[split].remove_columns("messages")
 
     #############################
     # Initialize the GRPO trainer
     #############################
     call_backs = get_callbacks(training_args, model_args)
     call_backs.append(GradientMonitorCallback)
-    trainer = GRPOTrainer(
+    trainer = GRPOEvalTrainer(
         model=model,
         reward_funcs=reward_funcs,
         args=training_args,
-        train_dataset=dataset[script_args.dataset_train_split],
-        eval_dataset=(dataset[script_args.dataset_test_split] if training_args.eval_strategy != "no" else None),
+        train_dataset=train_dataset,
+        eval_dataset=(eval_dataset if training_args.eval_strategy != "no" else None),
         peft_config=get_peft_config(model_args),
         callbacks=call_backs,
         processing_class=tokenizer,
@@ -193,7 +436,7 @@ def main(script_args, training_args, model_args):
         checkpoint = last_checkpoint
     train_result = trainer.train(resume_from_checkpoint=checkpoint)
     metrics = train_result.metrics
-    metrics["train_samples"] = len(dataset[script_args.dataset_train_split])
+    metrics["train_samples"] = len(train_dataset)
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
     trainer.save_state()
@@ -222,7 +465,7 @@ def main(script_args, training_args, model_args):
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
         metrics = trainer.evaluate()
-        metrics["eval_samples"] = len(dataset[script_args.dataset_test_split])
+        metrics["eval_samples"] = len(eval_dataset)
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
 
