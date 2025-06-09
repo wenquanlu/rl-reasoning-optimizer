@@ -33,6 +33,7 @@ from .utils.ioi import (
     get_piston_client_from_env,
     score_subtask,
 )
+import random
 
 
 def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str], **kwargs) -> list[Optional[float]]:
@@ -574,6 +575,11 @@ def get_soft_overlong_punishment(max_completion_len, soft_punish_cache):
     return soft_overlong_punishment_reward
 
 
+def random_reward(completions, **kwargs):
+    rewards = [1.0 if random.random() < 0.5 else 0.0 for _ in completions]
+    return rewards
+
+
 def get_reward_funcs(script_args) -> list[Callable]:
     REWARD_FUNCS_REGISTRY = {
         "accuracy": accuracy_reward,
@@ -623,6 +629,7 @@ def get_reward_funcs(script_args) -> list[Callable]:
             max_completion_len=script_args.max_completion_len,
             soft_punish_cache=script_args.soft_punish_cache,
         ),
+        "random": random_reward,
     }
     reward_funcs = [REWARD_FUNCS_REGISTRY[func] for func in script_args.reward_funcs]
 
