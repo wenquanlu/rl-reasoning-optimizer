@@ -25,7 +25,7 @@ from typing import Callable, Dict, Optional
 from latex2sympy2_extended import NormalizationConfig
 from math_verify import LatexExtractionConfig, parse, verify
 
-from .utils.code_providers import get_provider
+
 from .utils.ioi import (
     SubtaskResult,
     add_includes,
@@ -43,6 +43,50 @@ def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str]
     for content, sol in zip(contents, solution):
         gold_parsed = parse(
             sol,
+            extraction_mode="first_match",
+        )
+        if len(gold_parsed) != 0:
+            # We require the answer to be provided in correct latex (no malformed operators)
+            answer_parsed = parse(
+                content,
+                extraction_config=[
+                    LatexExtractionConfig(
+                        normalization_config=NormalizationConfig(
+                            nits=False,
+                            malformed_operators=False,
+                            basic_latex=True,
+                            equations=True,
+                            boxed="all",
+                            units=True,
+                        ),
+                        # Ensures that boxed is tried first
+                        boxed_match_priority=0,
+                        try_extract_without_anchor=False,
+                    )
+                ],
+                extraction_mode="first_match",
+            )
+            # Compute binary rewards if verifiable, `None` otherwise to skip this example
+            try:
+                reward = float(verify(gold_parsed, answer_parsed))
+            except Exception as e:
+                print(f"verify failed: {e}, answer: {answer_parsed}, gold: {gold_parsed}")
+                reward = None
+        else:
+            # If the gold solution is not parseable, we assign `None` to skip this example
+            reward = None
+            print("Failed to parse gold solution: ", sol)
+        rewards.append(reward)
+
+    return rewards
+
+def accuracy_reward_with_answer(completions: list[list[dict[str, str]]], solution: list[str], **kwargs) -> list[Optional[float]]:
+    """Reward function that checks if the completion is the same as the ground truth."""
+    contents = [completion[0]["content"] for completion in completions]
+    rewards = []
+    for content, sol in zip(contents, solution):
+        gold_parsed = parse(
+            "\\boxed{" + sol + "}",
             extraction_mode="first_match",
         )
         if len(gold_parsed) != 0:
@@ -363,192 +407,6 @@ def _init_event_loop():
     return loop
 
 
-def ioi_code_reward(completions, test_batch_size: int = 1, provider_type: str = "piston", **kwargs) -> list[float]:
-    """Reward function that evaluates IOI problems using a specified execution client.
-
-    Assumes the dataset has the same format as hf.co/datasets/open-r1/ioi
-
-    Args:
-        completions: List of model completions to evaluate
-        test_batch_size: Evaluate these many test cases in parallel, then check if any of them failed (0 score):
-                       if so stop evaluating; otherwise continue with the next batch of test cases.
-        provider_type: The execution provider to use (default: "piston"). Supported values: "piston", "morph"
-        **kwargs: Additional arguments passed from the dataset
-    """
-    # Get the appropriate client based on provider_type
-    if provider_type == "morph":
-        execution_client = get_morph_client_from_env()
-    else:
-        # for info on setting up piston workers, see slurm/piston/README.md
-        execution_client = get_piston_client_from_env()
-
-    code_snippets = [
-        # note: grading is automatically skipped if no code is extracted
-        add_includes(extract_code(completion[-1]["content"], "cpp"), problem_id)
-        for completion, problem_id in zip(completions, kwargs["id"])
-    ]
-
-    async def run_catch_exceptions(task):
-        try:
-            return await task
-        except Exception as e:
-            print(f"Error from {provider_type} worker: {e}")
-            return SubtaskResult()
-
-    problems_data = [dict(zip(kwargs.keys(), values)) for values in zip(*kwargs.values())]
-
-    loop = _init_event_loop()
-    evals = [
-        loop.create_task(
-            run_catch_exceptions(
-                score_subtask(
-                    execution_client,
-                    problem_data,
-                    code,
-                    test_batch_size=test_batch_size,
-                )
-            )
-        )
-        for problem_data, code in zip(problems_data, code_snippets)
-    ]
-    results = loop.run_until_complete(asyncio.gather(*evals))
-
-    return [result.score for result in results]
-
-
-def extract_code(completion: str, language: str = "python") -> str:
-    pattern = re.compile(rf"```{language}\n(.*?)```", re.DOTALL)
-    matches = pattern.findall(completion)
-    extracted_answer = matches[-1] if len(matches) >= 1 else ""
-    return extracted_answer
-
-
-def binary_code_reward(
-    completions,
-    num_parallel: int = 2,
-    provider_type: str = "e2b",
-    enforce_same_language: bool = False,
-    **kwargs,
-) -> list[float]:
-    rewards = code_reward(
-        completions,
-        num_parallel=num_parallel,
-        provider_type=provider_type,
-        enforce_same_language=enforce_same_language,
-        **kwargs,
-    )
-    BINARY_THRESHOLD = 0.99
-
-    output = []
-    for reward in rewards:
-        if reward is None:
-            output.append(None)
-        else:
-            output.append(1.0 if reward > BINARY_THRESHOLD else 0.0)
-
-    return output
-
-
-def code_reward(
-    completions,
-    num_parallel: int = 2,
-    provider_type: str = "e2b",
-    enforce_same_language: bool = False,
-    **kwargs,
-) -> list[float]:
-    """Reward function that evaluates code snippets using a code execution provider.
-
-    Assumes the dataset contains a `verification_info` column with test cases.
-
-    Args:
-        completions: List of model completions to evaluate
-        num_parallel: Number of parallel code executions (default: 2)
-        provider_type: Which code execution provider to use (default: "e2b")
-        enforce_same_language: If True, verify all problems use the same language (default: False)
-        **kwargs: Additional arguments passed to the verification
-    """
-    evaluation_script_template = """
-    import subprocess
-    import json
-
-    def evaluate_code(code, test_cases):
-        passed = 0
-        total = len(test_cases)
-        exec_timeout = 5
-
-        for case in test_cases:
-            process = subprocess.run(
-                ["python3", "-c", code],
-                input=case["input"],
-                text=True,
-                capture_output=True,
-                timeout=exec_timeout
-            )
-
-            if process.returncode != 0:  # Error in execution
-                continue
-
-            output = process.stdout.strip()
-
-            # TODO: implement a proper validator to compare against ground truth. For now we just check for exact string match on each line of stdout.
-            all_correct = True
-            for line1, line2 in zip(output.split('\\n'), case['output'].split('\\n')):
-                all_correct = all_correct and line1.strip() == line2.strip()
-
-            if all_correct:
-                passed += 1
-
-        success_rate = (passed / total)
-        return success_rate
-
-    code_snippet = {code}
-    test_cases = json.loads({test_cases})
-
-    evaluate_code(code_snippet, test_cases)
-    """
-
-    code_snippets = [extract_code(completion[-1]["content"]) for completion in completions]
-    verification_info = kwargs["verification_info"]
-
-    template = evaluation_script_template
-
-    scripts = [
-        template.format(code=json.dumps(code), test_cases=json.dumps(json.dumps(info["test_cases"])))
-        for code, info in zip(code_snippets, verification_info)
-    ]
-
-    language = verification_info[0]["language"]
-
-    if enforce_same_language:
-        all_same_language = all(v["language"] == language for v in verification_info)
-        if not all_same_language:
-            raise ValueError("All verification_info must have the same language", verification_info)
-
-    execution_provider = get_provider(
-        provider_type=provider_type,
-        num_parallel=num_parallel,
-        **kwargs,
-    )
-
-    return execution_provider.execute_scripts(scripts, ["python"] * len(scripts))
-
-
-def get_code_format_reward(language: str = "python"):
-    """Format reward function specifically for code responses.
-
-    Args:
-        language: Programming language supported by E2B https://e2b.dev/docs/code-interpreting/supported-languages
-    """
-    pattern = rf"^<think>\n.*?\n</think>\n<answer>\n.*?```{language}.*?```.*?\n</answer>$"
-
-    def code_format_reward(completions, **kwargs):
-        completion_contents = [completion[0]["content"] for completion in completions]
-        matches = [re.match(pattern, content, re.DOTALL | re.MULTILINE) for content in completion_contents]
-        return [1.0 if match else 0.0 for match in matches]
-
-    return code_format_reward
-
-
 def get_soft_overlong_punishment(max_completion_len, soft_punish_cache):
     """
     Reward function that penalizes overlong completions. It is used to penalize overlong completions,
@@ -597,39 +455,13 @@ def get_reward_funcs(script_args) -> list[Callable]:
             max_penalty=script_args.repetition_max_penalty,
         ),
         "length": len_reward,
-        "code": update_wrapper(
-            partial(
-                code_reward,
-                num_parallel=script_args.parallel_code_exec_per_proc,
-                provider_type=script_args.code_provider,
-                enforce_same_language=getattr(script_args, "enforce_same_language", False),
-            ),
-            code_reward,
-        ),
-        "binary_code": update_wrapper(
-            partial(
-                binary_code_reward,
-                num_parallel=script_args.parallel_code_exec_per_proc,
-                provider_type=script_args.code_provider,
-                enforce_same_language=getattr(script_args, "enforce_same_language", False),
-            ),
-            binary_code_reward,
-        ),
-        "ioi_code": update_wrapper(
-            partial(
-                ioi_code_reward,
-                test_batch_size=script_args.code_eval_test_batch_size,
-                provider_type=getattr(script_args, "ioi_provider", "piston"),
-            ),
-            ioi_code_reward,
-        ),
-        "code_format": get_code_format_reward(language=script_args.code_language),
         "tag_count": tag_count_reward,
         "soft_overlong_punishment": get_soft_overlong_punishment(
             max_completion_len=script_args.max_completion_len,
             soft_punish_cache=script_args.soft_punish_cache,
         ),
         "random": random_reward,
+        "accuracy_with_answer": accuracy_reward_with_answer,
     }
     reward_funcs = [REWARD_FUNCS_REGISTRY[func] for func in script_args.reward_funcs]
 

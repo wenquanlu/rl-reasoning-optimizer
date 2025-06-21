@@ -1,0 +1,60 @@
+# Model arguments
+model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+model_revision: main
+torch_dtype: bfloat16
+attn_implementation: flash_attention_2
+
+# Data training arguments
+dataset_name: openai/gsm8k
+dataset_config: main
+dataset_prompt_column: question
+system_prompt: "You are a helpful AI Assistant that provides well-reasoned and detailed responses. You first think about the reasoning process as an internal monologue and then provide the user with the answer. Respond in the following format: <think>\n...\n</think>\n<answer>\n...\n</answer>"
+
+# GRPO trainer config
+bf16: true
+use_vllm: false
+do_eval: false
+gradient_accumulation_steps: 32
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false
+hub_model_id: Qwen2.5-0.5B-Open-R1-DAPO
+hub_strategy: every_save
+learning_rate: 5.0e-06
+log_completions: false
+log_level: info
+logging_first_step: true
+logging_steps: 1
+logging_strategy: steps
+lr_scheduler_type: cosine
+max_prompt_length: 512
+max_completion_length: 1024
+soft_punish_cache: 100
+max_steps: -1
+num_generations: 16
+num_train_epochs: 1
+output_dir: data/Qwen2.5-0.5B-Open-R1-DAPO
+overwrite_output_dir: true
+per_device_eval_batch_size: 2
+per_device_train_batch_size: 2
+push_to_hub: false
+report_to:
+- wandb
+reward_funcs:
+- accuracy
+- format
+- tag_count
+- soft_overlong_punishment
+reward_weights:
+- 1.0
+- 1.0
+- 1.0
+- 1.0
+save_strategy: "epoch"
+save_total_limit: 1
+seed: 42
+warmup_ratio: 0.1
+loss_type: "bnpo"
+beta: 0.0
+epsilon_high: 0.28
+mask_truncated_completions: true

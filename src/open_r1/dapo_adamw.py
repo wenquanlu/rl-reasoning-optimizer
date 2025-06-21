@@ -12,65 +12,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Supervised fine-tuning script for decoder language models.
-
-Usage:
-
-# One 1 node of 8 x H100s
-accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml src/open_r1/sft.py \
-    --model_name_or_path Qwen/Qwen2.5-1.5B-Instruct \
-    --dataset_name open-r1/OpenR1-Math-220k \
-    --learning_rate 2.0e-5 \
-    --num_train_epochs 1 \
-    --packing \
-    --max_seq_length 4096 \
-    --per_device_train_batch_size 2 \
-    --gradient_accumulation_steps 8 \
-    --gradient_checkpointing \
-    --bf16 \
-    --logging_steps 5 \
-    --eval_strategy steps \
-    --eval_steps 100 \
-    --output_dir data/Qwen2.5-1.5B-Open-R1-Distill
-"""
-
 import logging
 import os
 import sys
-import torch
+
 import datasets
 import transformers
 from datasets import load_dataset
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
-from transformers import GenerationConfig
 
-from open_r1.configs import SFTConfig
+from open_r1.configs import GRPOConfig, GRPOScriptArguments
+from open_r1.rewards import get_reward_funcs
 from open_r1.utils import get_model, get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
-from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config, setup_chat_format
-from open_r1.trainers.sft_trainer import SFTTrainer
+from trl import GRPOTrainer, ModelConfig, TrlParser, get_peft_config
+import torch
+
+logger = logging.getLogger(__name__)
+
+from transformers import TrainerCallback
+from transformers.data.data_collator import DataCollatorMixin
 from trl.models import unwrap_model_for_generation
 from trl.data_utils import apply_chat_template
 from transformers.trainer import EvalLoopOutput
 from tqdm import tqdm
+from trl.trainer.utils import pad
+import wandb
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 from torch.utils.data import Dataset, DataLoader
 from transformers.utils import is_datasets_available
-from trl.trainer.utils import pad
-from transformers.data.data_collator import DataCollatorMixin
 from dataclasses import dataclass
+from open_r1.utils.math_eval import remove_boxed, last_boxed_only_string
 import re
-from vllm import SamplingParams
-from latex2sympy2_extended import NormalizationConfig
-from math_verify import LatexExtractionConfig, parse, verify
-from trl.extras.profiling import profiling_context
-# def extract_hash_answer(text: str) -> str | None:
-#     if "####" not in text:
-#         return None
-#     return text.split("####")[1].strip()
+from transformers import GenerationConfig
 
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 
@@ -83,40 +59,13 @@ def extract_hash_answer(completion):
     else:
         return None
 
-def reward_style_accuracy(response, gt):
-    gold_parsed = parse(
-        "\\boxed{" + gt + "}",
-        extraction_mode="first_match",
-    )
-    reward = 0
-    if len(gold_parsed) != 0:
-        # We require the answer to be provided in correct latex (no malformed operators)
-        answer_parsed = parse(
-            response,
-            extraction_config=[
-                LatexExtractionConfig(
-                    normalization_config=NormalizationConfig(
-                        nits=False,
-                        malformed_operators=False,
-                        basic_latex=True,
-                        equations=True,
-                        boxed="all",
-                        units=True,
-                    ),
-                    # Ensures that boxed is tried first
-                    boxed_match_priority=0,
-                    try_extract_without_anchor=False,
-                )
-            ],
-            extraction_mode="first_match",
-        )
-        # Compute binary rewards if verifiable, `None` otherwise to skip this example
-        try:
-            reward = int(verify(gold_parsed, answer_parsed))
-        except Exception as e:
-            print(f"verify failed: {e}, answer: {answer_parsed}, gold: {gold_parsed}")
-    return reward
-    
+def extract_boxed_answer(text):
+    boxed = last_boxed_only_string(text)
+    if boxed is None:
+        return None
+    answer = remove_boxed(boxed)
+    answer = answer.replace(",", "").strip()
+    return answer
 
 @dataclass
 class DataCollatorForInference(DataCollatorMixin):
@@ -146,8 +95,7 @@ class DataCollatorForInference(DataCollatorMixin):
 
         return output
 
-class SFTLightEvalTrainer(SFTTrainer):
-    
+class GRPOEvalTrainer(GRPOTrainer):
     # copied from Trainer.py with _remove_unused_columns commented
     def get_eval_dataloader(self, eval_dataset: Optional[Union[str, Dataset]] = None) -> DataLoader:
         """
@@ -179,10 +127,10 @@ class SFTLightEvalTrainer(SFTTrainer):
             if eval_dataset is not None
             else self.eval_dataset
         )
-        pad_token = self.args.pad_token or self.processing_class.pad_token or self.processing_class.eos_token
+        pad_token = self.processing_class.pad_token or self.processing_class.eos_token
         pad_token_id = self.processing_class.convert_tokens_to_ids(pad_token)
-        data_collator = DataCollatorForInference(pad_token_id, self.args.pad_to_multiple_of)
-        
+        data_collator = DataCollatorForInference(pad_token_id, None)
+
         if is_datasets_available() and isinstance(eval_dataset, datasets.Dataset):
             #eval_dataset = self._remove_unused_columns(eval_dataset, description="evaluation")
             pass
@@ -198,10 +146,10 @@ class SFTLightEvalTrainer(SFTTrainer):
         }
 
         if not isinstance(eval_dataset, torch.utils.data.IterableDataset):
-            dataloader_params["sampler"] = self._get_eval_sampler(eval_dataset)
+            #dataloader_params["sampler"] = self._get_eval_sampler(eval_dataset)
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
-
+        
         # accelerator.free_memory() will destroy the references, so
         # we need to store the non-prepared version
         eval_dataloader = DataLoader(eval_dataset, **dataloader_params)
@@ -254,19 +202,16 @@ class SFTLightEvalTrainer(SFTTrainer):
                     targets = batch.get("solution", None)
 
                     for pred, target in zip(completions, targets):
-                        # extracted_pred = extract_boxed_answer(pred)
-                        # if extracted_pred is not None:
-                        #     preds.append(extracted_pred.strip())
-                        #     labels.append(target.strip())
-                        #     if extracted_pred.strip() == target.strip():
-                        #         correct += 1
-                        #info, r = boxed_reward_fn(pred, target, fast=False) # boxed_reward has to be from boxed, reward_style would be more lenient
-                        r = reward_style_accuracy(pred, target)
-                        correct += r
+                        extracted_pred = extract_boxed_answer(pred)
+                        if extracted_pred is not None:
+                            preds.append(extracted_pred.strip())
+                            labels.append(target.strip())
+                            if extracted_pred.strip() == target.strip():
+                                correct += 1
                         total += 1
-            # print(preds)
-            # print(labels)
-            # print(correct)
+                    # print(preds)
+                    # print(labels)
+                    # print(correct)
         accuracy = correct / total if total > 0 else 0.0
         metrics = {f"{metric_key_prefix}_accuracy": accuracy}
         return EvalLoopOutput(
@@ -276,10 +221,63 @@ class SFTLightEvalTrainer(SFTTrainer):
             num_samples=total,
         )
             
+class GradientMonitorCallback(TrainerCallback):
+    def __init__(self):
+        self.grad_running_mean = None
+        self.grad_running_mean_squared = None
 
-logger = logging.getLogger(__name__)
+    def on_pre_optimizer_step(self, args, state, control, **kwargs):
+        return
+        model = kwargs["model"]
+        accelerator = kwargs["accelerator"]
+
+        # this is step before current step, because step increments after this callback in trainer
+        step = state.global_step
+
+        # Collect all gradients in a single flattened vector
+        grads = [p.grad.detach().view(-1) for p in model.parameters() if p.grad is not None]
+        if not grads:
+            return  # Skip if no grads this step
+
+        flat_grad = torch.cat(grads)
+        grad_norm = torch.norm(flat_grad, p=2).item()
+        grad_var = torch.var(flat_grad).item()
+
+        # Initialize or update running stats
+        if self.grad_running_mean is None:
+            self.grad_running_mean = flat_grad.clone()
+            self.grad_running_mean_squared = flat_grad.clone() ** 2
+        else:
+            self.grad_running_mean = (self.grad_running_mean * step + flat_grad) / (step + 1)
+            self.grad_running_mean_squared = (self.grad_running_mean_squared * step + flat_grad ** 2) / (step + 1)
+
+        # Reduce stats across processes (mean reduction)
+        grad_norm_tensor = torch.tensor(grad_norm, device=accelerator.device)
+        grad_var_tensor = torch.tensor(grad_var, device=accelerator.device)
+
+        grad_norm_tensor = accelerator.reduce(grad_norm_tensor, reduction="mean")
+        grad_var_tensor = accelerator.reduce(grad_var_tensor, reduction="mean")
+        flat_grad = accelerator.reduce(flat_grad, reduction="mean")
+        self.grad_running_mean = accelerator.reduce(self.grad_running_mean, reduction="mean")
+        self.grad_running_mean_squared = accelerator.reduce(self.grad_running_mean_squared, reduction="mean")
+        if step + 1 >= 10:
+            grad_std = (self.grad_running_mean_squared - self.grad_running_mean ** 2).sqrt()
+            lambda_sigma = 3.0
+            deviation = (flat_grad - self.grad_running_mean).abs()
+            outliers = (deviation > lambda_sigma * grad_std)
+            proportion_outliers = outliers.float().mean().item()
 
 
+        if accelerator.is_main_process:
+            info = {
+                "grad/post_clip_norm": grad_norm_tensor.item(),
+                "grad/variance": grad_var_tensor.item(),
+            }
+            if step + 1 >= 10:
+                info["grad/proportion_spike"] = proportion_outliers
+            #print(f"[Step Debug] HF global_step: {state.global_step}, wandb.run.step: {wandb.run.step}")
+            wandb.log(info, step=wandb.run.step + 1)
+            #print(f"[Step {step + 1}] Pre-clip grad norm: {grad_norm_tensor.item():.4f} | Var: {grad_var_tensor.item():.4f}")
 def main(script_args, training_args, model_args):
     # Set seed for reproducibility
     set_seed(training_args.seed)
@@ -299,6 +297,11 @@ def main(script_args, training_args, model_args):
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
 
+    # Log on each process a small summary
+    logger.warning(
+        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
+        + f" distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
+    )
     logger.info(f"Model parameters {model_args}")
     logger.info(f"Script parameters {script_args}")
     logger.info(f"Training parameters {training_args}")
@@ -313,80 +316,48 @@ def main(script_args, training_args, model_args):
     if "wandb" in training_args.report_to:
         init_wandb_training(training_args)
 
-    ################
-    # Load datasets
-    ################
-    dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config)
-    #def rename(example):
-    #    return {"prompt": example["question"], "completion": example["answer"]}
-    #dataset = dataset.map(rename,
-    #            remove_columns=["question", "answer"])
-    if script_args.dataset_name == "openai/gsm8k":
-        def format_chat_gsm8k(example, prompt_column="question"):
-            prompt = []
+    # Load the dataset
+    dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config, cache_dir="/home/wenquan-lu/hf_dataset_cache")
 
-            if training_args.system_prompt is not None:
-                prompt.append({"role": "system", "content": training_args.system_prompt})
-            
-            if prompt_column not in example:
-                raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
-            
-            completion = [{"role": "assistant", "content": example["answer"]}]
-            prompt.append({"role": "user", "content": example[prompt_column]})
-            
-            return {"prompt": prompt, "completion": completion}
+    def format_chat_gsm8k(example):
+        return {
+            "messages": [
+                {"role": "user", "content": example["question"].strip()},
+                {"role": "assistant", "content": example["answer"].strip()},
+            ]
+        }
 
-        def make_conversation(example, prompt_column="question"):
-            prompt = []
+    # def make_conversation(example, prompt_column="question"):
+    #     prompt = []
 
-            if training_args.system_prompt is not None:
-                prompt.append({"role": "system", "content": training_args.system_prompt})
+    #     if training_args.system_prompt is not None:
+    #         prompt.append({"role": "system", "content": 'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.'})
 
-            if prompt_column not in example:
-                raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
-            solution = extract_hash_answer(example["answer"])
-            prompt.append({"role": "user", "content": example[prompt_column]})
-            return {"prompt": prompt, "solution": solution}
+    #     if prompt_column not in example:
+    #         raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
+    #     solution = extract_hash_answer(example["answer"])
+    #     prompt.append({"role": "user", "content": example[prompt_column]})
+    #     return {"prompt": prompt, "solution": solution}
 
-        train_dataset = dataset[script_args.dataset_train_split].map(format_chat_gsm8k,
-                    remove_columns=["question", "answer"])
-        eval_dataset = dataset[script_args.dataset_test_split].map(make_conversation, 
-                    remove_columns=["question", "answer"])
-        #print(next(iter(eval_dataset['test'])), "#!!!!!")
-    elif script_args.dataset_name == "DigitalLearningGmbH/MATH-lighteval":
-        def format_chat_gsm8k(example, prompt_column="problem"):
-            prompt = []
+    # Format into conversation
+    def make_conversation(example, prompt_column: str = script_args.dataset_prompt_column):
+        prompt = []
 
-            if training_args.system_prompt is not None:
-                prompt.append({"role": "system", "content": training_args.system_prompt})
-            
-            if prompt_column not in example:
-                raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
-            
-            completion = [{"role": "assistant", "content": example["solution"]}]
-            prompt.append({"role": "user", "content": example[prompt_column]})
-            
-            return {"prompt": prompt, "completion": completion}
+        if training_args.system_prompt is not None:
+            prompt.append({"role": "system", "content": training_args.system_prompt})
 
-        def make_conversation(example, prompt_column="problem"):
-            prompt = []
+        if prompt_column not in example:
+            raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
+        solution = extract_hash_answer(example["answer"])
+        prompt.append({"role": "user", "content": example[prompt_column]})
+        return {"prompt": prompt, "solution": solution}
 
-            if training_args.system_prompt is not None:
-                prompt.append({"role": "system", "content": training_args.system_prompt})
+    #dataset = dataset.map(make_conversation)
 
-            if prompt_column not in example:
-                raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
-            solution = example["answer"]
-            prompt.append({"role": "user", "content": example[prompt_column]})
-            return {"prompt": prompt, "solution": solution}
-
-        train_dataset = dataset[script_args.dataset_train_split].map(format_chat_gsm8k,
-                    remove_columns=["problem", "level", "solution", "type"])
-        eval_dataset = eval_dataset = load_dataset("HuggingFaceH4/MATH-500", name="default")["test"]
-        eval_dataset = eval_dataset.map(make_conversation, 
-                    remove_columns=["problem", "answer", "subject", "level", "unique_id"])
-    
-
+    train_dataset = dataset[script_args.dataset_train_split].map(make_conversation,
+                remove_columns=["question", "answer"])
+    eval_dataset = dataset[script_args.dataset_test_split].map(make_conversation, 
+                remove_columns=["question", "answer"])
     ################
     # Load tokenizer
     ################
@@ -394,61 +365,66 @@ def main(script_args, training_args, model_args):
     tokenizer.padding_side = 'left'
     print("tokenizer padding side:", tokenizer.padding_side )
 
-    train_dataset = train_dataset.map(
-        apply_chat_template,
-        fn_kwargs={"tokenizer": tokenizer}
-    )
-
-    eval_dataset = eval_dataset.map(
-        apply_chat_template,
-        fn_kwargs={"tokenizer": tokenizer}
-    )
-
-    #print(next(iter(eval_dataset['test'])), "222222")
-
-
-    def tokenize(example, processing_class):
-        prompts_text = example["prompt"]
-        prompt_inputs = processing_class(
-            text=prompts_text, return_tensors="pt", padding=False, truncation=False, add_special_tokens=False
+    if training_args.eval_strategy != "no":
+        eval_dataset = eval_dataset.map(
+            apply_chat_template,
+            fn_kwargs={"tokenizer": tokenizer}
         )
-        #prompt_inputs = super()._prepare_inputs(prompt_inputs)
-        #prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
-        prompt_inputs['input_ids'] = prompt_inputs['input_ids'][:, -512 :].squeeze(0)
-        prompt_inputs['attention_mask'] = prompt_inputs['attention_mask'][:, -512 :].squeeze(0)
-        return prompt_inputs
 
-    eval_dataset = eval_dataset.map(
-        tokenize,
-        fn_kwargs={
-            "processing_class": tokenizer
-        },
-        remove_columns=["prompt"]
-    )
+        #print(next(iter(eval_dataset['test'])), "222222")
 
-    print(next(iter(eval_dataset)), "!333333")
 
-    ###################
-    # Load model
-    ###################
+        def tokenize(example, processing_class):
+            prompts_text = example["prompt"]
+            prompt_inputs = processing_class(
+                text=prompts_text, return_tensors="pt", padding=False, truncation=False, add_special_tokens=False
+            )
+            #prompt_inputs = super()._prepare_inputs(prompt_inputs)
+            #prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
+            prompt_inputs['input_ids'] = prompt_inputs['input_ids'][:, -512 :].squeeze(0)
+            prompt_inputs['attention_mask'] = prompt_inputs['attention_mask'][:, -512 :].squeeze(0)
+            return prompt_inputs
+
+        eval_dataset = eval_dataset.map(
+            tokenize,
+            fn_kwargs={
+                "processing_class": tokenizer
+            },
+            remove_columns=["prompt"]
+        )
+
+    ##############
+    # Load model #
+    ##############
     logger.info("*** Loading model ***")
     model = get_model(model_args, training_args)
 
-    if tokenizer.chat_template is None:
-        logger.info("No chat template provided, using ChatML.")
-        model, tokenizer = setup_chat_format(model, tokenizer, format="chatml")
+    # Get reward functions from the registry
+    reward_funcs = get_reward_funcs(script_args)
 
-    ############################
-    # Initialize the SFT Trainer
-    ############################
-    trainer = SFTLightEvalTrainer(
+    # def extract_hash_answer(text: str) -> str | None:
+    #     if "####" not in text:
+    #         return None
+    #     return text.split("####")[1].strip()
+
+    # for split in dataset:
+    #     if "messages" in dataset[split].column_names:
+    #         dataset[split] = dataset[split].remove_columns("messages")
+
+    #############################
+    # Initialize the GRPO trainer
+    #############################
+    call_backs = get_callbacks(training_args, model_args)
+    call_backs.append(GradientMonitorCallback)
+    trainer = GRPOEvalTrainer(
         model=model,
+        reward_funcs=reward_funcs,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=(eval_dataset if training_args.eval_strategy != "no" else None),
-        processing_class=tokenizer,
         peft_config=get_peft_config(model_args),
-        callbacks=get_callbacks(training_args, model_args),
+        callbacks=call_backs,
+        processing_class=tokenizer,
     )
 
     ###############
@@ -504,6 +480,6 @@ def main(script_args, training_args, model_args):
 
 
 if __name__ == "__main__":
-    parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig))
+    parser = TrlParser((GRPOScriptArguments, GRPOConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
     main(script_args, training_args, model_args)

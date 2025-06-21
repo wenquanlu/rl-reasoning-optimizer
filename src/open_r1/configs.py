@@ -17,11 +17,12 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import trl
-
+from .trainers.grpo_config import GRPOConfig
+from .trainers.sft_config import SFTConfig
 
 # TODO: add the shared options with a mixin to reduce code duplication
 @dataclass
-class GRPOConfig(trl.GRPOConfig):
+class GRPOConfig(GRPOConfig):
     """
     args for callbacks, benchmarks etc
     """
@@ -56,10 +57,16 @@ class GRPOConfig(trl.GRPOConfig):
         default=None,
         metadata={"help": ("The group to store runs under.")},
     )
+    eval_dataset_names: list[str] = field(
+        default=None,
+        metadata={
+            "help": "eval dataset names"
+        }
+    )
 
 
 @dataclass
-class SFTConfig(trl.SFTConfig):
+class SFTConfig(SFTConfig):
     """
     args for callbacks, benchmarks etc
     """

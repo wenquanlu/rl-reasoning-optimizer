@@ -18,6 +18,7 @@ import sys
 
 import datasets
 import transformers
+from datasets import load_dataset
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
@@ -26,27 +27,17 @@ from open_r1.rewards import get_reward_funcs
 from open_r1.utils import get_model, get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
-from trl import ModelConfig, TrlParser, get_peft_config
+from trl import GRPOTrainer, ModelConfig, TrlParser, get_peft_config
 import torch
-from open_r1.data_preprocessor import load_math_train, load_gsm8k_train, load_gsm8k_eval, load_math500_eval
+
 logger = logging.getLogger(__name__)
 
 from transformers import TrainerCallback
+
 import wandb
 import re
-from open_r1.trainers.grpo_eval_trainer import GRPOEvalTrainer
 
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
-
-def extract_hash_answer(completion):
-    match = ANS_RE.search(completion)
-    if match:
-        match_str = match.group(1).strip()
-        match_str = match_str.replace(",", "")
-        return match_str
-    else:
-        return None
-
 
 class GradientMonitorCallback(TrainerCallback):
     def __init__(self):
@@ -142,27 +133,14 @@ def main(script_args, training_args, model_args):
 
     if "wandb" in training_args.report_to:
         init_wandb_training(training_args)
-    
-    tokenizer = get_tokenizer(model_args, training_args)
-    tokenizer.padding_side = 'left'
-    print("tokenizer padding side:", tokenizer.padding_side )
-    print("eval_strategy", training_args.eval_strategy)
 
-    if script_args.dataset_name == "openai/gsm8k":
-        train_dataset = load_gsm8k_train(script_args, training_args, model_args)
-    elif script_args.dataset_name == "DigitalLearningGmbH/MATH-lighteval":
-        train_dataset = load_math_train(script_args, training_args, model_args)
-    
-    eval_loaders = {
-        "gsm8k": load_gsm8k_eval,
-        "math500": load_math500_eval
-    }
-    eval_dataset = {}
-    if training_args.eval_dataset_names:
-        for eval_dataset_name in training_args.eval_dataset_names:
-            if eval_dataset_name in eval_loaders:
-                loader = eval_loaders[eval_dataset_name]
-                eval_dataset[eval_dataset_name] = loader(script_args, training_args, script_args, tokenizer)
+    # Load the dataset
+    dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config, cache_dir="/home/wenquan-lu/hf_dataset_cache")
+
+    ################
+    # Load tokenizer
+    ################
+    tokenizer = get_tokenizer(model_args, training_args)
 
     ##############
     # Load model #
@@ -173,26 +151,44 @@ def main(script_args, training_args, model_args):
     # Get reward functions from the registry
     reward_funcs = get_reward_funcs(script_args)
 
-    # def extract_hash_answer(text: str) -> str | None:
-    #     if "####" not in text:
-    #         return None
-    #     return text.split("####")[1].strip()
+    def extract_hash_answer(completion):
+        match = ANS_RE.search(completion)
+        if match:
+            match_str = match.group(1).strip()
+            match_str = match_str.replace(",", "")
+            return match_str
+        else:
+            return None
+    # Format into conversation
+    def make_conversation(example, prompt_column: str = script_args.dataset_prompt_column):
+        prompt = []
 
-    # for split in dataset:
-    #     if "messages" in dataset[split].column_names:
-    #         dataset[split] = dataset[split].remove_columns("messages")
+        if training_args.system_prompt is not None:
+            prompt.append({"role": "system", "content": training_args.system_prompt})
+
+        if prompt_column not in example:
+            raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
+        solution = extract_hash_answer(example["answer"])
+        prompt.append({"role": "user", "content": example[prompt_column]})
+        return {"prompt": prompt, "solution": solution}
+
+    dataset = dataset.map(make_conversation)
+
+    for split in dataset:
+        if "messages" in dataset[split].column_names:
+            dataset[split] = dataset[split].remove_columns("messages")
 
     #############################
     # Initialize the GRPO trainer
     #############################
     call_backs = get_callbacks(training_args, model_args)
     call_backs.append(GradientMonitorCallback)
-    trainer = GRPOEvalTrainer(
+    trainer = GRPOTrainer(
         model=model,
         reward_funcs=reward_funcs,
         args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=(eval_dataset if training_args.eval_strategy != "no" else None),
+        train_dataset=dataset[script_args.dataset_train_split],
+        eval_dataset=(dataset[script_args.dataset_test_split] if training_args.eval_strategy != "no" else None),
         peft_config=get_peft_config(model_args),
         callbacks=call_backs,
         processing_class=tokenizer,
@@ -209,7 +205,7 @@ def main(script_args, training_args, model_args):
         checkpoint = last_checkpoint
     train_result = trainer.train(resume_from_checkpoint=checkpoint)
     metrics = train_result.metrics
-    metrics["train_samples"] = len(train_dataset)
+    metrics["train_samples"] = len(dataset[script_args.dataset_train_split])
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
     trainer.save_state()
@@ -238,7 +234,7 @@ def main(script_args, training_args, model_args):
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
         metrics = trainer.evaluate()
-        #metrics["eval_samples"] = len(eval_dataset)
+        metrics["eval_samples"] = len(dataset[script_args.dataset_test_split])
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
 

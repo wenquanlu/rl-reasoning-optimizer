@@ -50,8 +50,8 @@ from open_r1.configs import SFTConfig
 from open_r1.utils import get_model, get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
-from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config, setup_chat_format
-from open_r1.trainers.sft_trainer import SFTTrainer
+from trl import ModelConfig, ScriptArguments, SFTTrainer, TrlParser, get_peft_config, setup_chat_format
+
 from trl.models import unwrap_model_for_generation
 from trl.data_utils import apply_chat_template
 from transformers.trainer import EvalLoopOutput
@@ -321,70 +321,32 @@ def main(script_args, training_args, model_args):
     #    return {"prompt": example["question"], "completion": example["answer"]}
     #dataset = dataset.map(rename,
     #            remove_columns=["question", "answer"])
-    if script_args.dataset_name == "openai/gsm8k":
-        def format_chat_gsm8k(example, prompt_column="question"):
-            prompt = []
+    def format_chat_math(example):
+        return {
+            "messages": [
+                {"role": "user", "content": example["problem"].strip()},
+                {"role": "assistant", "content": example["solution"].strip()},
+            ]
+        }
 
-            if training_args.system_prompt is not None:
-                prompt.append({"role": "system", "content": training_args.system_prompt})
-            
-            if prompt_column not in example:
-                raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
-            
-            completion = [{"role": "assistant", "content": example["answer"]}]
-            prompt.append({"role": "user", "content": example[prompt_column]})
-            
-            return {"prompt": prompt, "completion": completion}
+    def make_conversation(example, prompt_column="problem"):
+        prompt = []
 
-        def make_conversation(example, prompt_column="question"):
-            prompt = []
+        if training_args.system_prompt is not None:
+            prompt.append({"role": "system", "content": 'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.'})
 
-            if training_args.system_prompt is not None:
-                prompt.append({"role": "system", "content": training_args.system_prompt})
+        if prompt_column not in example:
+            raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
+        solution = example["answer"]
+        prompt.append({"role": "user", "content": example[prompt_column]})
+        return {"prompt": prompt, "solution": solution}
 
-            if prompt_column not in example:
-                raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
-            solution = extract_hash_answer(example["answer"])
-            prompt.append({"role": "user", "content": example[prompt_column]})
-            return {"prompt": prompt, "solution": solution}
-
-        train_dataset = dataset[script_args.dataset_train_split].map(format_chat_gsm8k,
-                    remove_columns=["question", "answer"])
-        eval_dataset = dataset[script_args.dataset_test_split].map(make_conversation, 
-                    remove_columns=["question", "answer"])
-        #print(next(iter(eval_dataset['test'])), "#!!!!!")
-    elif script_args.dataset_name == "DigitalLearningGmbH/MATH-lighteval":
-        def format_chat_gsm8k(example, prompt_column="problem"):
-            prompt = []
-
-            if training_args.system_prompt is not None:
-                prompt.append({"role": "system", "content": training_args.system_prompt})
-            
-            if prompt_column not in example:
-                raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
-            
-            completion = [{"role": "assistant", "content": example["solution"]}]
-            prompt.append({"role": "user", "content": example[prompt_column]})
-            
-            return {"prompt": prompt, "completion": completion}
-
-        def make_conversation(example, prompt_column="problem"):
-            prompt = []
-
-            if training_args.system_prompt is not None:
-                prompt.append({"role": "system", "content": training_args.system_prompt})
-
-            if prompt_column not in example:
-                raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
-            solution = example["answer"]
-            prompt.append({"role": "user", "content": example[prompt_column]})
-            return {"prompt": prompt, "solution": solution}
-
-        train_dataset = dataset[script_args.dataset_train_split].map(format_chat_gsm8k,
-                    remove_columns=["problem", "level", "solution", "type"])
-        eval_dataset = eval_dataset = load_dataset("HuggingFaceH4/MATH-500", name="default")["test"]
-        eval_dataset = eval_dataset.map(make_conversation, 
-                    remove_columns=["problem", "answer", "subject", "level", "unique_id"])
+    train_dataset = dataset[script_args.dataset_train_split].map(format_chat_math,
+                remove_columns=["level", "type"])
+    eval_dataset = dataset[script_args.dataset_test_split].map(make_conversation, 
+                remove_columns=["problem", "answer", "subject", "level", "unique_id"])
+    #print(next(iter(eval_dataset['test'])), "#!!!!!")
+    
     
 
     ################
@@ -393,11 +355,6 @@ def main(script_args, training_args, model_args):
     tokenizer = get_tokenizer(model_args, training_args)
     tokenizer.padding_side = 'left'
     print("tokenizer padding side:", tokenizer.padding_side )
-
-    train_dataset = train_dataset.map(
-        apply_chat_template,
-        fn_kwargs={"tokenizer": tokenizer}
-    )
 
     eval_dataset = eval_dataset.map(
         apply_chat_template,
