@@ -14,11 +14,112 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Literal, Optional
 
 import trl
 from .trainers.grpo_config import GRPOConfig
 from .trainers.sft_config import SFTConfig
+
+@dataclass
+class DatasetConfig:
+    """Configuration for a dataset in a mixture."""
+
+    id: str
+    config: Optional[str] = None
+    split: str = "train"
+    columns: Optional[list[str]] = None
+    weight: Optional[float] = None
+
+
+@dataclass
+class DatasetMixtureConfig:
+    """Configuration for a mixture of datasets."""
+
+    datasets: list[DatasetConfig]
+    seed: int = 0
+    test_split_size: Optional[float] = None
+
+
+@dataclass
+class ScriptArguments(trl.ScriptArguments):
+    """
+    Extended version of ScriptArguments with support for dataset mixtures.
+
+    Args:
+        dataset_mixture (`dict[str, Any]` or `None`, *optional*, defaults to `None`):
+            Configuration for creating dataset mixtures with advanced options.
+            Format:
+              dataset_mixture:
+                datasets:
+                  - id: dataset_id1
+                    config: config_name
+                    columns:
+                      - col1
+                      - col2
+                    weight: 0.5
+                  - id: dataset_id2
+                    config: config_name
+                    columns:
+                      - col1
+                      - col2
+                    weight: 0.5
+                seed: 42
+                test_split_size: 0.1
+    """
+
+    # Override the dataset_name to make it optional
+    dataset_name: Optional[str] = field(
+        default=None, metadata={"help": "Dataset name. Can be omitted if using dataset_mixture."}
+    )
+    dataset_mixture: Optional[dict[str, Any]] = field(
+        default=None,
+        metadata={"help": "Configuration for creating dataset mixtures with advanced options like shuffling."},
+    )
+
+    def __post_init__(self):
+        if self.dataset_name is None and self.dataset_mixture is None:
+            raise ValueError("Either `dataset_name` or `dataset_mixture` must be provided")
+
+        if self.dataset_mixture is not None:
+            if not isinstance(self.dataset_mixture, dict) or "datasets" not in self.dataset_mixture:
+                raise ValueError(
+                    "dataset_mixture must be a dictionary with a 'datasets' key. "
+                    "Expected format: {'datasets': [...], 'seed': int}"
+                )
+
+            datasets_list = []
+            datasets_data = self.dataset_mixture.get("datasets", [])
+
+            if isinstance(datasets_data, list):
+                for dataset_config in datasets_data:
+                    datasets_list.append(
+                        DatasetConfig(
+                            id=dataset_config.get("id"),
+                            config=dataset_config.get("config"),
+                            split=dataset_config.get("split", "train"),
+                            columns=dataset_config.get("columns"),
+                            weight=dataset_config.get("weight", 1.0),
+                        )
+                    )
+            else:
+                raise ValueError("'datasets' must be a list of dataset configurations")
+
+            self.dataset_mixture = DatasetMixtureConfig(
+                datasets=datasets_list,
+                seed=self.dataset_mixture.get("seed", 0),
+                test_split_size=self.dataset_mixture.get("test_split_size", None),
+            )
+
+            # Check that column names are consistent across all dataset configs
+            columns_sets = [set(dataset.columns) for dataset in datasets_list if dataset.columns is not None]
+            if columns_sets:
+                first_columns = columns_sets[0]
+                if not all(columns == first_columns for columns in columns_sets):
+                    raise ValueError(
+                        "Column names must be consistent across all dataset configurations in a mixture. "
+                        f"Found different column sets: {[list(cols) for cols in columns_sets]}"
+                    )
+
 
 # TODO: add the shared options with a mixin to reduce code duplication
 @dataclass
@@ -36,15 +137,22 @@ class GRPOConfig(GRPOConfig):
         metadata={"help": "The callbacks to run during training."},
     )
     chat_template: Optional[str] = field(default=None, metadata={"help": "The chat template to use."})
+    hub_model_revision: Optional[str] = field(
+        default="main", metadata={"help": "The Hub model branch to push the model to."}
+    )
+    num_completions_to_print: int = field(default=0, metadata={"help": "Number of completions to print."})
+    overwrite_hub_revision: bool = field(default=False, metadata={"help": "Whether to overwrite the Hub revision."})
+    push_to_hub_revision: bool = field(default=False, metadata={"help": "Whether to push to a Hub revision/branch."})
     system_prompt: Optional[str] = field(
         default=None,
         metadata={"help": "The optional system prompt to use."},
     )
-    hub_model_revision: Optional[str] = field(
-        default="main", metadata={"help": "The Hub model branch to push the model to."}
+    wandb_log_unique_prompts: bool = field(
+        default=True,
+        metadata={
+            "help": ("Whether to log the unique prompts to wandb. This will create a new run for each unique prompt.")
+        },
     )
-    overwrite_hub_revision: bool = field(default=False, metadata={"help": "Whether to overwrite the Hub revision."})
-    push_to_hub_revision: bool = field(default=False, metadata={"help": "Whether to push to a Hub revision/branch."})
     wandb_entity: Optional[str] = field(
         default=None,
         metadata={"help": ("The entity to store runs under.")},
@@ -105,7 +213,7 @@ class SFTConfig(SFTConfig):
 
 
 @dataclass
-class GRPOScriptArguments(trl.ScriptArguments):
+class GRPOScriptArguments(ScriptArguments):
     """
     Script arguments for the GRPO training script.
 
@@ -166,6 +274,7 @@ class GRPOScriptArguments(trl.ScriptArguments):
     )
     code_language: str = field(
         default="python",
+        # '(?:python|cpp)'
         metadata={
             "help": "Language for code format reward. Based on E2B supported languages https://e2b.dev/docs/code-interpreting/supported-languages",
             "choices": ["python", "javascript", "r", "java", "bash", "cpp"],
@@ -176,6 +285,10 @@ class GRPOScriptArguments(trl.ScriptArguments):
         metadata={
             "help": "for each generation, evaluate these many test cases in parallel, then check if any of them failed (0 score): if so stop evaluating; otherwise continue with the next batch of test cases. Useful to avoid overloading the eval server + save time on wrong solutions"
         },
+    )
+    code_eval_scoring_mode: Literal["pass_fail", "partial", "weighted_sum"] = field(
+        default="weighted_sum",
+        metadata={"help": "use fraction of passed test cases as reward. If false, use 0/1 scoring."},
     )
     parallel_code_exec_per_proc: int = field(
         default=2,
