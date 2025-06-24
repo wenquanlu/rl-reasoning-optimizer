@@ -35,6 +35,7 @@ from transformers import TrainerCallback
 
 import wandb
 import re
+from datasets import load_dataset
 
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 
@@ -134,7 +135,7 @@ def main(script_args, training_args, model_args):
         init_wandb_training(training_args)
 
     # Load the dataset
-    dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config, cache_dir="/home/wenquan-lu/hf_dataset_cache")
+    dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config)
 
     ################
     # Load tokenizer

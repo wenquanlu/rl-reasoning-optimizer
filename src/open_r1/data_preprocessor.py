@@ -124,7 +124,7 @@ def load_math_train(script_args, training_args, model_args):
     #     return answer
 
     # Load the dataset
-    train_dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config, cache_dir="/home/wenquan-lu/hf_dataset_cache")[script_args.dataset_train_split]
+    train_dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config)[script_args.dataset_train_split]
 
         # Format into conversation
     def make_conversation(example, prompt_column: str = script_args.dataset_prompt_column):
