@@ -29,7 +29,7 @@ from math_verify import LatexExtractionConfig, parse, verify
 #     answer = answer.replace(",", "").strip()
 #     return answer
 
-
+# more lenient evaluation accept all anchors, e.g., \\boxed, $$$$, last
 def reward_style_accuracy(response, gt):
     gold_parsed = parse(
         "\\boxed{" + gt + "}",
