@@ -75,12 +75,12 @@ def load_gsm8k_eval(script_args, training_args, model_args, tokenizer):
 
         #print(next(iter(eval_dataset['test'])), "222222")
         if training_args.use_vllm:
-            def truncate_prompt_for_vllm(example, tokenizer, max_prompt_tokens=512):
+            def truncate_prompt_for_vllm(example, tokenizer, max_prompt_tokens):
                 prompt_text = example["prompt"]
                 # Convert to token ids (without padding)
-                encoded = tokenizer(prompt_text, truncation=True, max_length=max_prompt_tokens, add_special_tokens=False)
+                encoded = tokenizer(prompt_text, truncation=True, add_special_tokens=False)["input_ids"][-max_prompt_tokens:]
                 # Decode back to string after truncation
-                truncated_prompt = tokenizer.decode(encoded["input_ids"], skip_special_tokens=True)
+                truncated_prompt = tokenizer.decode(encoded, skip_special_tokens=False)
                 example["prompt"] = truncated_prompt
                 return example
             eval_dataset = eval_dataset.map(
@@ -170,12 +170,12 @@ def load_math500_eval(script_args, training_args, model_args, tokenizer):
 
         #print(next(iter(eval_dataset['test'])), "222222")
         if training_args.use_vllm:
-            def truncate_prompt_for_vllm(example, tokenizer, max_prompt_tokens=512):
+            def truncate_prompt_for_vllm(example, tokenizer, max_prompt_tokens):
                 prompt_text = example["prompt"]
                 # Convert to token ids (without padding)
-                encoded = tokenizer(prompt_text, truncation=True, max_length=max_prompt_tokens, add_special_tokens=False)
+                encoded = tokenizer(prompt_text, truncation=True, add_special_tokens=False)["input_ids"][-max_prompt_tokens:]
                 # Decode back to string after truncation
-                truncated_prompt = tokenizer.decode(encoded["input_ids"], skip_special_tokens=True)
+                truncated_prompt = tokenizer.decode(encoded, skip_special_tokens=False)
                 example["prompt"] = truncated_prompt
                 return example
             eval_dataset = eval_dataset.map(
