@@ -201,11 +201,11 @@ class GRPOEvalTrainer(GRPOTrainer):
                         guided_decoding = None
                         sampling_params = SamplingParams(
                             n=1,  # vLLM on each GPU generates only 1 in colocate mode
-                            repetition_penalty=self.repetition_penalty,
-                            temperature=self.temperature,
-                            top_p=self.top_p,
-                            top_k=-1 if self.top_k is None else self.top_k,
-                            min_p=0.0 if self.min_p is None else self.min_p,
+                            repetition_penalty=1.0,
+                            temperature=0.0,
+                            top_p=1.0,
+                            top_k=-1,
+                            min_p=0.0,
                             max_tokens=self.max_completion_length,
                             guided_decoding=guided_decoding,
                         )

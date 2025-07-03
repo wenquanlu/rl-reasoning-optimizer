@@ -1,0 +1,64 @@
+# Model arguments
+model_name_or_path: sail/Qwen2.5-Math-1.5B-Oat-Zero
+model_revision: main
+torch_dtype: bfloat16
+attn_implementation: flash_attention_2
+
+# Data training arguments
+dataset_name: DigitalLearningGmbH/MATH-lighteval
+dataset_config: default
+dataset_prompt_column: problem
+system_prompt: "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think> <answer> answer here </answer>. Put the final answer within \\boxed{}."
+chat_template: |
+  {{- '<|im_start|>system\nPlease reason step by step, and put your final answer within \\boxed{}.<|im_end|>\n<|im_start|>user\n' }}
+  {%- for message in messages %}
+      {%- if (message.role == "user") %}
+          {{- message.content }}
+      {%- endif %}
+  {%- endfor %}
+  {{- '<|im_end|>\n<|im_start|>assistant\n' }}
+
+eval_dataset_names:
+- math500
+
+# GRPO trainer config
+bf16: true
+use_vllm: true
+do_eval: true
+eval_strategy: steps
+eval_steps: 10
+gradient_accumulation_steps: 32
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false
+hub_model_id: oat-zero-1.5b-evaluate-start
+vllm_gpu_memory_utilization: 0.9
+hub_strategy: every_save
+learning_rate: 2.0e-05
+log_completions: false
+log_level: info
+logging_first_step: true
+logging_steps: 1
+logging_strategy: steps
+lr_scheduler_type: constant
+max_prompt_length: 1024
+max_completion_length: 3072
+max_steps: -1
+num_generations: 16
+num_train_epochs: 1
+output_dir: data/qwen3b_evaluate-start
+overwrite_output_dir: true
+per_device_eval_batch_size: 4
+per_device_train_batch_size: 2
+push_to_hub: false
+report_to:
+- wandb
+reward_funcs:
+- boxed_accuracy
+reward_weights:
+- 1.0
+save_strategy: "epoch"
+save_total_limit: 1
+seed: 42
+warmup_ratio: 0.1
+eval_on_start: true

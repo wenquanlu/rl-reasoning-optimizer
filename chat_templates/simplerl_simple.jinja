@@ -1,0 +1,10 @@
+{%- for message in messages %}
+    {%- if (message.role == "user") or (message.role == "assistant" and not message.tool_calls) %}
+        {{- 'Question\n:' + message.content + '\n' }}
+    {%- elif message.role == "assistant" %}
+        {{- message.content + "\n\n" }}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- 'Answer:\nLet\'s think step by step.' + '\n' }}
+{%- endif %}
