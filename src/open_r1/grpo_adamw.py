@@ -168,6 +168,14 @@ def main(script_args, training_args, model_args):
     # Load model #
     ##############
     logger.info("*** Loading model ***")
+
+    print("=== CUDA Diagnostics ===")
+    print("Inside Python Script")
+    print("CUDA_VISIBLE_DEVICES:", os.environ.get("CUDA_VISIBLE_DEVICES"))
+    print("torch.cuda.is_available():", torch.cuda.is_available())
+    print("torch.cuda.device_count():", torch.cuda.device_count())
+    print("torch.cuda.get_device_name(0):", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A")
+    print("=========================")
     model = get_model(model_args, training_args)
 
     # Get reward functions from the registry

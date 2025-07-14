@@ -177,7 +177,10 @@ class GRPOEvalTrainer(GRPOTrainer):
             else:
                 self._eval_dataloaders = {dataloader_key: eval_dataloader}
 
-        return self.accelerator.prepare(eval_dataloader)
+        self.accelerator.even_batches = False
+        prepared_dataloader = self.accelerator.prepare(eval_dataloader)
+        self.accelerator.even_batches = True
+        return prepared_dataloader
 
     def evaluation_loop(
         self,
@@ -297,12 +300,24 @@ class GRPOEvalTrainer(GRPOTrainer):
             # print(preds)
             # print(labels)
             # print(correct)
-        accuracy = correct / total if total > 0 else 0.0
+        # Convert to tensors
+        correct_tensor = torch.tensor(correct, device=self.accelerator.device)
+        total_tensor = torch.tensor(total, device=self.accelerator.device)
+
+        # Gather from all processes
+        all_correct = self.accelerator.gather_for_metrics(correct_tensor)
+        all_total = self.accelerator.gather_for_metrics(total_tensor)
+
+        # Sum across all processes
+        correct_sum = all_correct.sum().item()
+        total_sum = all_total.sum().item()
+        print(total_sum, "!!!!!!!!!!!!!!!!!!")
+        accuracy = correct_sum / total_sum if total_sum > 0 else 0.0
         metrics = {f"{metric_key_prefix}_accuracy": accuracy}
         return EvalLoopOutput(
-            predictions=preds,
-            label_ids=labels,
+            predictions=preds if self.accelerator.is_main_process else None,
+            label_ids=labels if self.accelerator.is_main_process else None,
             metrics=metrics,
-            num_samples=total,
+            num_samples=total_sum,
         )
             
