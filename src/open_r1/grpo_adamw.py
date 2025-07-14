@@ -28,7 +28,7 @@ from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
 from trl import ModelConfig, TrlParser, get_peft_config
 import torch
-from open_r1.data_preprocessor import load_math_train, load_gsm8k_train, load_gsm8k_eval, load_math500_eval
+from open_r1.data_preprocessor import load_math_train, load_gsm8k_train, load_gsm8k_eval, load_math500_eval, load_aime24_eval, load_amc_eval, load_aime25_eval
 logger = logging.getLogger(__name__)
 
 from transformers import TrainerCallback
@@ -155,7 +155,10 @@ def main(script_args, training_args, model_args):
     
     eval_loaders = {
         "gsm8k": load_gsm8k_eval,
-        "math500": load_math500_eval
+        "math500": load_math500_eval,
+        "aime24": load_aime24_eval,
+        "amc": load_amc_eval,
+        "aime25": load_aime25_eval
     }
     eval_dataset = {}
     if training_args.eval_dataset_names:
@@ -186,7 +189,7 @@ def main(script_args, training_args, model_args):
     # Initialize the GRPO trainer
     #############################
     call_backs = get_callbacks(training_args, model_args)
-    call_backs.append(GradientMonitorCallback)
+
     trainer = GRPOEvalTrainer(
         model=model,
         reward_funcs=reward_funcs,
