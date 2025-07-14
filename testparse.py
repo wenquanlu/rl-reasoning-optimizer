@@ -25,3 +25,11 @@ print(gold_parsed)
 
 gold_parsed = parse("the \\fbox{{123}} haha ")
 print(gold_parsed)
+
+gold_parsed1 = parse("42")
+print(gold_parsed1)
+
+gold_parsed2 = parse("42.0")
+print(gold_parsed2)
+
+print(int(verify(gold_parsed1, gold_parsed2)))
