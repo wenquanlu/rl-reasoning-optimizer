@@ -18,7 +18,6 @@ import sys
 
 import datasets
 import transformers
-from datasets import load_dataset
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
@@ -27,74 +26,17 @@ from open_r1.rewards import get_reward_funcs
 from open_r1.utils import get_model, get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
-from trl import GRPOTrainer, ModelConfig, TrlParser, get_peft_config
-sys.path.append(os.path.abspath("/home/wenquan-lu/Workspace/rl-reasoning-optimizer/Muon"))
+from trl import ModelConfig, TrlParser, get_peft_config
 from muon import MuonWithAuxAdam
 from open_r1.utils.train_utils import get_decay_parameter_names
 import torch
-
+from open_r1.data_preprocessor import load_math_train, load_gsm8k_train, load_gsm8k_eval, load_math500_eval, load_aime24_eval, load_amc_eval, load_aime25_eval, load_minerva_eval, load_olympiad_eval
 logger = logging.getLogger(__name__)
 
-from transformers import TrainerCallback
-
-import wandb
-
-class GradientMonitorCallback(TrainerCallback):
-    def __init__(self):
-        self.grad_running_mean = None
-        self.grad_running_mean_squared = None
-
-    def on_pre_optimizer_step(self, args, state, control, **kwargs):
-        model = kwargs["model"]
-        accelerator = kwargs["accelerator"]
-
-        # this is step before current step, because step increments after this callback in trainer
-        step = state.global_step
-
-        # Collect all gradients in a single flattened vector
-        grads = [p.grad.detach().view(-1) for p in model.parameters() if p.grad is not None]
-        if not grads:
-            return  # Skip if no grads this step
-
-        flat_grad = torch.cat(grads)
-        grad_norm = torch.norm(flat_grad, p=2).item()
-        grad_var = torch.var(flat_grad).item()
-
-        # Initialize or update running stats
-        if self.grad_running_mean is None:
-            self.grad_running_mean = flat_grad.clone()
-            self.grad_running_mean_squared = flat_grad.clone() ** 2
-        else:
-            self.grad_running_mean = (self.grad_running_mean * step + flat_grad) / (step + 1)
-            self.grad_running_mean_squared = (self.grad_running_mean_squared * step + flat_grad ** 2) / (step + 1)
-
-        # Reduce stats across processes (mean reduction)
-        grad_norm_tensor = torch.tensor(grad_norm, device=accelerator.device)
-        grad_var_tensor = torch.tensor(grad_var, device=accelerator.device)
-
-        grad_norm_tensor = accelerator.reduce(grad_norm_tensor, reduction="mean")
-        grad_var_tensor = accelerator.reduce(grad_var_tensor, reduction="mean")
-        flat_grad = accelerator.reduce(flat_grad, reduction="mean")
-        self.grad_running_mean = accelerator.reduce(self.grad_running_mean, reduction="mean")
-        self.grad_running_mean_squared = accelerator.reduce(self.grad_running_mean_squared, reduction="mean")
-        if step + 1 >= 10:
-            grad_std = (self.grad_running_mean_squared - self.grad_running_mean ** 2).sqrt()
-            lambda_sigma = 3.0
-            deviation = (flat_grad - self.grad_running_mean).abs()
-            outliers = (deviation > lambda_sigma * grad_std)
-            proportion_outliers = outliers.float().mean().item()
+from open_r1.trainers.grpo_eval_trainer import GRPOEvalTrainer
+from open_r1.custom_callbacks import OptimStateCleanupCallback, ForceEvalCallback
 
 
-        if accelerator.is_main_process:
-            info = {
-                "grad/post_clip_norm": grad_norm_tensor.item(),
-                "grad/variance": grad_var_tensor.item(),
-            }
-            if step + 1 >= 10:
-                info["grad/proportion_spike"] = proportion_outliers
-            #print(f"[Step Debug] HF global_step: {state.global_step}, wandb.run.step: {wandb.run.step}")
-            wandb.log(info, step=wandb.run.step + 1)
-            #print(f"[Step {step + 1}] Pre-clip grad norm: {grad_norm_tensor.item():.4f} | Var: {grad_var_tensor.item():.4f}")
 def main(script_args, training_args, model_args):
     # Set seed for reproducibility
     set_seed(training_args.seed)
@@ -133,13 +75,34 @@ def main(script_args, training_args, model_args):
     if "wandb" in training_args.report_to:
         init_wandb_training(training_args)
 
-    # Load the dataset
-    dataset = load_dataset(script_args.dataset_name, name=script_args.dataset_config, cache_dir="/home/wenquan-lu/hf_dataset_cache")
-
-    ################
-    # Load tokenizer
-    ################
     tokenizer = get_tokenizer(model_args, training_args)
+    tokenizer.padding_side = 'left'
+    print("tokenizer padding side:", tokenizer.padding_side )
+    print("eval_strategy", training_args.eval_strategy)
+
+    if script_args.dataset_name == "openai/gsm8k":
+        train_dataset = load_gsm8k_train(script_args, training_args, model_args)
+    elif script_args.dataset_name == "DigitalLearningGmbH/MATH-lighteval":
+        train_dataset = load_math_train(script_args, training_args, model_args)
+    
+    eval_loaders = {
+        "gsm8k": load_gsm8k_eval,
+        "math500": load_math500_eval,
+        "aime24": load_aime24_eval,
+        "amc": load_amc_eval,
+        "aime25": load_aime25_eval,
+        "aime24_avg8": load_aime24_eval,
+        "aime25_avg8": load_aime25_eval,
+        "amc_avg8": load_amc_eval,
+        "minerva": load_minerva_eval,
+        "olympiad": load_olympiad_eval
+    }
+    eval_dataset = {}
+    if training_args.eval_dataset_names:
+        for eval_dataset_name in training_args.eval_dataset_names:
+            if eval_dataset_name in eval_loaders:
+                loader = eval_loaders[eval_dataset_name]
+                eval_dataset[eval_dataset_name] = loader(script_args, training_args, script_args, tokenizer)
 
     ##############
     # Load model #
@@ -175,47 +138,37 @@ def main(script_args, training_args, model_args):
 
     # Create optimizer groups
     optimizer_grouped_parameters = [
-        dict(params=decay_muon_params, weight_decay=weight_decay_value, use_muon=True),
-        dict(params=no_decay_muon_params, weight_decay=0.0, use_muon=True),
-        dict(params=decay_adam_params, betas=(0.9, 0.999), weight_decay=weight_decay_value, use_muon=False),
-        dict(params=no_decay_adam_params, betas=(0.9, 0.999), weight_decay=0.0, use_muon=False),
+        dict(params=decay_muon_params, weight_decay=weight_decay_value, use_muon=True, lr=learning_rate_value),
+        dict(params=no_decay_muon_params, weight_decay=0.0, use_muon=True, lr=learning_rate_value),
+        dict(params=decay_adam_params, betas=(0.9, 0.999), weight_decay=weight_decay_value, use_muon=False, lr=learning_rate_value),
+        dict(params=no_decay_adam_params, betas=(0.9, 0.999), weight_decay=0.0, use_muon=False, lr=learning_rate_value),
     ]
+
+    for ind, g in enumerate(optimizer_grouped_parameters):
+        if len(g["params"]) == 0:
+            print(f"Skipping optimizer group {ind} with use_muon={g['use_muon']} due to no params.")
+    # Remove any groups with empty params
+    optimizer_grouped_parameters = [g for g in optimizer_grouped_parameters if len(g["params"]) > 0]
+
 
     optimizer = MuonWithAuxAdam(optimizer_grouped_parameters)
 
     # Get reward functions from the registry
     reward_funcs = get_reward_funcs(script_args)
 
-    # Format into conversation
-    def make_conversation(example, prompt_column: str = script_args.dataset_prompt_column):
-        prompt = []
-
-        if training_args.system_prompt is not None:
-            prompt.append({"role": "system", "content": training_args.system_prompt})
-
-        if prompt_column not in example:
-            raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
-
-        prompt.append({"role": "user", "content": example[prompt_column]})
-        return {"prompt": prompt}
-
-    dataset = dataset.map(make_conversation)
-
-    for split in dataset:
-        if "messages" in dataset[split].column_names:
-            dataset[split] = dataset[split].remove_columns("messages")
 
     #############################
     # Initialize the GRPO trainer
     #############################
     call_backs = get_callbacks(training_args, model_args)
-    call_backs.append(GradientMonitorCallback)
-    trainer = GRPOTrainer(
+    call_backs.append(OptimStateCleanupCallback)
+    call_backs.append(ForceEvalCallback)
+    trainer = GRPOEvalTrainer(
         model=model,
         reward_funcs=reward_funcs,
         args=training_args,
-        train_dataset=dataset[script_args.dataset_train_split],
-        eval_dataset=(dataset[script_args.dataset_test_split] if training_args.eval_strategy != "no" else None),
+        train_dataset=train_dataset,
+        eval_dataset=(eval_dataset if training_args.eval_strategy != "no" else None),
         peft_config=get_peft_config(model_args),
         callbacks=call_backs,
         processing_class=tokenizer,
@@ -233,7 +186,7 @@ def main(script_args, training_args, model_args):
         checkpoint = last_checkpoint
     train_result = trainer.train(resume_from_checkpoint=checkpoint)
     metrics = train_result.metrics
-    metrics["train_samples"] = len(dataset[script_args.dataset_train_split])
+    metrics["train_samples"] = len(train_dataset)
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
     trainer.save_state()
@@ -242,6 +195,9 @@ def main(script_args, training_args, model_args):
     # Save model and create model card
     ##################################
     logger.info("*** Save model ***")
+    # Align the model's generation config with the tokenizer's eos token
+    # to avoid unbounded generation in the transformers `pipeline()` function
+    trainer.model.generation_config.eos_token_id = tokenizer.eos_token_id
     trainer.save_model(training_args.output_dir)
     logger.info(f"Model saved to {training_args.output_dir}")
 
@@ -262,7 +218,7 @@ def main(script_args, training_args, model_args):
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
         metrics = trainer.evaluate()
-        metrics["eval_samples"] = len(dataset[script_args.dataset_test_split])
+        #metrics["eval_samples"] = len(eval_dataset)
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
 
