@@ -138,9 +138,18 @@ def load_math_train(script_args, training_args, model_args):
 
         if prompt_column not in example:
             raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
+        
+        # patching missing answers in MATH-lighteval
+        prompt_text = example[prompt_column] 
+        solution = example['solution']
+        
+        if prompt_text == "For any integer $n>1$, the number of prime numbers greater than $n!+1$ and less than $n!+n$ is:\n$\\text{(A) } 0\\quad\\qquad \\text{(B) } 1\\quad\\\\ \\text{(C) } \\frac{n}{2} \\text{ for n even, } \\frac{n+1}{2} \\text{ for n odd}\\quad\\\\ \\text{(D) } n-1\\quad \\text{(E) } n$\n" \
+        or prompt_text == "You are given a sequence of $58$ terms; each term has the form $P+n$ where $P$ stands for the product $2 \\times 3 \\times 5 \\times\\ldots \\times 61$ of all prime numbers less than or equal to $61$, and $n$ takes, successively, the values $2, 3, 4,\\ldots, 59$. Let $N$ be the number of primes appearing in this sequence. Then $N$ is:\n$\\textbf{(A)}\\ 0\\qquad \\textbf{(B)}\\ 16\\qquad \\textbf{(C)}\\ 17\\qquad \\textbf{(D)}\\ 57\\qquad \\textbf{(E)}\\ 58$\n":
+            solution = "\\boxed{0}"
+            print("Patched a missing answer.")
 
         prompt.append({"role": "user", "content": example[prompt_column]})
-        return {"prompt": prompt}
+        return {"prompt": prompt, "solution": solution}
 
 
     train_dataset = train_dataset.map(make_conversation,
@@ -232,3 +241,41 @@ def load_aime25_eval(script_args, training_args, model_args, tokenizer):
     return eval_dataset
 
 
+def load_minerva_eval(script_args, training_args, model_args, tokenizer):
+    def make_eval_conversation(example, prompt_column="question"):
+        prompt = []
+        if training_args.system_prompt is not None:
+            prompt.append({"role": "system", "content": training_args.system_prompt})
+        if prompt_column not in example:
+            raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
+        prompt.append({"role": "user", "content": example[prompt_column]})
+        solution = example["answer"]
+        return {"prompt": prompt, "solution": solution}
+
+    eval_dataset = load_dataset("math-ai/minervamath")["test"]
+    eval_dataset = eval_dataset.map(make_eval_conversation, 
+                remove_columns=["question", "answer"])
+
+    if training_args.eval_strategy != "no":
+        eval_dataset = format_and_truncate_dataset(training_args, tokenizer, eval_dataset)
+    return eval_dataset
+
+
+def load_olympiad_eval(script_args, training_args, model_args, tokenizer):
+    def make_eval_conversation(example, prompt_column="question"):
+        prompt = []
+        if training_args.system_prompt is not None:
+            prompt.append({"role": "system", "content": training_args.system_prompt})
+        if prompt_column not in example:
+            raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
+        prompt.append({"role": "user", "content": example[prompt_column]})
+        solution = example["answer"]
+        return {"prompt": prompt, "solution": solution}
+
+    eval_dataset = load_dataset("knoveleng/OlympiadBench")["train"]
+    eval_dataset = eval_dataset.map(make_eval_conversation, 
+                remove_columns=["id", "subfield", "context", "question", "final_answer", "is_multiple_answer", "unit", "answer_type", "error", "answer"])
+
+    if training_args.eval_strategy != "no":
+        eval_dataset = format_and_truncate_dataset(training_args, tokenizer, eval_dataset)
+    return eval_dataset

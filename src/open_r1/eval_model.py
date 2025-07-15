@@ -28,7 +28,7 @@ from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
 from trl import ModelConfig, TrlParser, get_peft_config
 import torch
-from open_r1.data_preprocessor import load_math_train, load_gsm8k_train, load_gsm8k_eval, load_math500_eval, load_aime24_eval, load_aime25_eval, load_amc_eval
+from open_r1.data_preprocessor import load_math_train, load_gsm8k_train, load_gsm8k_eval, load_math500_eval, load_aime24_eval, load_aime25_eval, load_amc_eval, load_minerva_eval, load_olympiad_eval
 logger = logging.getLogger(__name__)
 
 from transformers import TrainerCallback
@@ -101,7 +101,12 @@ def main(script_args, training_args, model_args):
         "math500": load_math500_eval,
         "aime24": load_aime24_eval,
         "amc": load_amc_eval,
-        "aime25": load_aime25_eval
+        "aime25": load_aime25_eval,
+        "aime24_avg8": load_aime24_eval,
+        "aime25_avg8": load_aime25_eval,
+        "amc_avg8": load_amc_eval,
+        "minerva": load_minerva_eval,
+        "olympiad": load_olympiad_eval
     }
     eval_dataset = {}
     if training_args.eval_dataset_names:

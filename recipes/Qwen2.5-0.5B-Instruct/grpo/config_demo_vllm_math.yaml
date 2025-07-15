@@ -11,6 +11,14 @@ dataset_prompt_column: problem
 system_prompt: "You are a helpful AI Assistant that provides well-reasoned and detailed responses. You first think about the reasoning process as an internal monologue and then provide the user with the answer. Respond in the following format: <think>\n...\n</think>\n<answer>\n...\n</answer>. Put the final answer in \\boxed{}."
 eval_dataset_names:
 - math500
+- aime24
+- aime25
+- amc
+- minerva
+- olympiad
+- aime24_avg8
+- aime25_avg8
+- amc_avg8
 
 # GRPO trainer config
 bf16: true

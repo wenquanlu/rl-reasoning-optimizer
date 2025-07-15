@@ -70,7 +70,15 @@ chat_template: |
 system_prompt: "You are a helpful assistant."
 eval_dataset_names:
 - math500
+- aime24
 - aime25
+- amc
+- minerva
+- olympiad
+- aime24_avg8
+- aime25_avg8
+- amc_avg8
+
 
 # GRPO trainer config
 bf16: true

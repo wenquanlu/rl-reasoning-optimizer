@@ -198,10 +198,9 @@ class GRPOEvalTrainer(GRPOTrainer):
         labels = []
         with torch.no_grad():
             if self.use_vllm:
-                short_eval_sets = {"eval_aime24", "eval_aime25", "eval_amc"}
                 repeats = 1
                 temperature = 0.0
-                if metric_key_prefix in short_eval_sets:
+                if metric_key_prefix.endswith("avg8"):
                     repeats = 8
                     temperature = 0.6
                 if self.vllm_mode == "colocate":
