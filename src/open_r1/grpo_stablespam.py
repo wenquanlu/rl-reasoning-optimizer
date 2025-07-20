@@ -107,7 +107,7 @@ def main(script_args, training_args, model_args):
         for eval_dataset_name in training_args.eval_dataset_names:
             if eval_dataset_name in eval_loaders:
                 loader = eval_loaders[eval_dataset_name]
-                eval_dataset[eval_dataset_name] = loader(script_args, training_args, script_args, tokenizer)
+                eval_dataset[eval_dataset_name] = loader(script_args, training_args, model_args, tokenizer)
 
     ##############
     # Load model #

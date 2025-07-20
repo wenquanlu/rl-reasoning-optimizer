@@ -21,6 +21,7 @@ from vllm import SamplingParams
 from open_r1.utils.math_grader import boxed_reward_fn
 from latex2sympy2_extended import NormalizationConfig
 from math_verify import LatexExtractionConfig, parse, verify
+import wandb
 # def extract_boxed_answer(text):
 #     boxed = last_boxed_only_string(text)
 #     if boxed is None:
@@ -109,8 +110,35 @@ class DataCollatorForInferenceVLLM(DataCollatorMixin):
             output["solution"] = [example["solution"] for example in examples]
 
         return output
-    
 class GRPOEvalTrainer(GRPOTrainer):
+    def __init__(
+        self,
+        model,
+        reward_funcs,
+        args = None,
+        train_dataset = None,
+        eval_dataset = None,
+        processing_class = None,
+        reward_processing_classes = None,
+        callbacks = None,
+        optimizers = (None, None),
+        peft_config = None,
+    ):
+        super().__init__(
+            model,
+            reward_funcs,
+            args,
+            train_dataset,
+            eval_dataset,
+            processing_class,
+            reward_processing_classes,
+            callbacks,
+            optimizers,
+            peft_config
+        )
+        self.num_eval_datasets = len([dataset for dataset in self.eval_dataset if not dataset.endswith("avg8")])
+        self.local_accuracies = []
+
     # copied from Trainer.py with _remove_unused_columns commented
     def get_eval_dataloader(self, eval_dataset: Optional[Union[str, Dataset]] = None) -> DataLoader:
         """
@@ -321,6 +349,16 @@ class GRPOEvalTrainer(GRPOTrainer):
         print(total_sum, "!!!!!!!!!!!!!!!!!!")
         accuracy = correct_sum / total_sum if total_sum > 0 else 0.0
         metrics = {f"{metric_key_prefix}_accuracy": accuracy}
+        if self.accelerator.is_main_process:
+            if not metric_key_prefix.endswith("avg8"):
+                self.local_accuracies.append(accuracy)
+                if len(self.local_accuracies) == self.num_eval_datasets:
+                    avg_pass1_accuracy = sum(self.local_accuracies)/len(self.local_accuracies)
+                    if wandb.run is not None:
+                        wandb.log({"eval/avg_pass@1_accuracy": avg_pass1_accuracy, "train/global_step": self.state.global_step})
+                    self.local_accuracies = []
+                
+
         return EvalLoopOutput(
             predictions=preds if self.accelerator.is_main_process else None,
             label_ids=labels if self.accelerator.is_main_process else None,
