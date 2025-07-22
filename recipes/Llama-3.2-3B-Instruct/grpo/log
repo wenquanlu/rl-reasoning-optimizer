@@ -1,0 +1,19 @@
+qwen2.5
+  eval_math500_accuracy           =      0.398
+  eval_math500_runtime            = 0:14:10.33
+  eval_math500_samples_per_second =      0.588
+  eval_math500_steps_per_second   =      0.147
+
+
+qwen2.5 (custom template)
+***** eval metrics *****
+  eval_math500_accuracy           =      0.466
+  eval_math500_runtime            = 0:14:19.84
+  eval_math500_samples_per_second =      0.581
+  eval_math500_steps_per_second   =      0.145
+
+***** eval metrics *****
+  eval_math500_accuracy           =      0.458
+  eval_math500_runtime            = 0:14:20.50
+  eval_math500_samples_per_second =      0.581
+  eval_math500_steps_per_second   =      0.145
