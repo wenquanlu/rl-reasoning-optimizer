@@ -224,60 +224,102 @@ class GRPOEvalTrainer(GRPOTrainer):
         correct = 0
         preds = []
         labels = []
-        with torch.no_grad():
-            if self.use_vllm:
-                repeats = 1
-                temperature = 0.0
-                if metric_key_prefix.endswith("avg8"):
-                    repeats = 8
-                    temperature = 0.6
-                if self.vllm_mode == "colocate":
-                    guided_decoding = None
-                    sampling_params = SamplingParams(
-                            n=1,  # vLLM on each GPU generates only 1 in colocate mode
-                            repetition_penalty=1.0,
-                            temperature=temperature,
-                            top_p=1.0,
-                            top_k=-1,
-                            min_p=0.0,
-                            max_tokens=self.max_completion_length,
-                            guided_decoding=guided_decoding,
-                        )
-                    for repeat in range(repeats):
+        if len(dataloader) > 0:
+            with torch.no_grad():
+                if self.use_vllm:
+                    repeats = 1
+                    temperature = 0.0
+                    if metric_key_prefix.endswith("avg8"):
+                        repeats = 8
+                        temperature = 0.6
+                    if self.vllm_mode == "colocate":
+                        guided_decoding = None
+                        sampling_params = SamplingParams(
+                                n=1,  # vLLM on each GPU generates only 1 in colocate mode
+                                repetition_penalty=1.0,
+                                temperature=temperature,
+                                top_p=1.0,
+                                top_k=-1,
+                                min_p=0.0,
+                                max_tokens=self.max_completion_length,
+                                guided_decoding=guided_decoding,
+                            )
+                        for repeat in range(repeats):
+                            for batch in tqdm(dataloader, desc=description):
+                                prompts_text = batch['prompt']
+
+                                if self.vllm_tensor_parallel_size > 1:
+                                    # Gather prompts from all ranks in the TP group and flatten.
+                                    # Each rank starts with its own prompts; after gathering, all ranks see the full group set.
+                                    orig_size = len(prompts_text)
+                                    gathered_prompts = [None for _ in range(self.vllm_tensor_parallel_size)]
+                                    torch.distributed.all_gather_object(gathered_prompts, prompts_text, group=self.tp_group)
+                                    all_prompts_text = [p for sublist in gathered_prompts for p in sublist]
+                                    raise Exception
+                                else:
+                                    all_prompts_text = prompts_text
+
+                                with profiling_context(self, "vLLM.generate"):
+                                    all_outputs = self.llm.generate(all_prompts_text, sampling_params=sampling_params, use_tqdm=False)
+
+                                completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
+
+                                if self.vllm_tensor_parallel_size > 1:
+                                    # Slice completions for this rank within its TP group.
+                                    # Each rank generates all outputs — we keep only our share.
+                                    local_rank_in_group = torch.distributed.get_rank(group=self.tp_group)
+                                    tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
+                                    completion_ids = completion_ids[tp_slice]
+                                    raise Exception
+
+
+                                # Pad the completions, and concatenate them with the prompts
+                                completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
+                                #completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
+                                #prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+                                completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+
+                                targets = batch.get("solution", None)
+
+                                for pred, target in zip(completions, targets):
+                                    # extracted_pred = extract_boxed_answer(pred)
+                                    # if extracted_pred is not None:
+                                    #     preds.append(extracted_pred.strip())
+                                    #     labels.append(target.strip())
+                                    #     if extracted_pred.strip() == target.strip():
+                                    #         correct += 1
+                                    #info, r = boxed_reward_fn(pred, target, fast=False) # boxed_reward has to be from boxed, reward_style would be more lenient
+                                    r = reward_style_accuracy(pred, target)
+                                    correct += r
+                                    total += 1
+                    else:
+                        raise Exception("non-coloate (server) mode not implemented")
+                else:
+                    raise("non-vllm evaluation not fully implemented")
+                    eval_generation_config = GenerationConfig(
+                        max_new_tokens=self.max_completion_length,
+                        do_sample=False,
+                        pad_token_id=self.processing_class.pad_token_id,
+                        bos_token_id=self.processing_class.bos_token_id,
+                        eos_token_id=self.processing_class.eos_token_id,
+                        #cache_implementation=args.cache_implementation,
+                    )
+                    with unwrap_model_for_generation(
+                        self.model_wrapped, self.accelerator
+                    ) as unwrapped_model:
+                        
                         for batch in tqdm(dataloader, desc=description):
-                            prompts_text = batch['prompt']
+                            prompt_ids = batch["input_ids"]
+                            prompt_completion_ids = unwrapped_model.generate(
+                                prompt_ids, attention_mask=batch["attention_mask"], generation_config=eval_generation_config
+                            )
+                            #print(prompt_completion_ids, "prompt completion ids!")
 
-                            if self.vllm_tensor_parallel_size > 1:
-                                # Gather prompts from all ranks in the TP group and flatten.
-                                # Each rank starts with its own prompts; after gathering, all ranks see the full group set.
-                                orig_size = len(prompts_text)
-                                gathered_prompts = [None for _ in range(self.vllm_tensor_parallel_size)]
-                                torch.distributed.all_gather_object(gathered_prompts, prompts_text, group=self.tp_group)
-                                all_prompts_text = [p for sublist in gathered_prompts for p in sublist]
-                                raise Exception
-                            else:
-                                all_prompts_text = prompts_text
-
-                            with profiling_context(self, "vLLM.generate"):
-                                all_outputs = self.llm.generate(all_prompts_text, sampling_params=sampling_params, use_tqdm=False)
-
-                            completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
-
-                            if self.vllm_tensor_parallel_size > 1:
-                                # Slice completions for this rank within its TP group.
-                                # Each rank generates all outputs — we keep only our share.
-                                local_rank_in_group = torch.distributed.get_rank(group=self.tp_group)
-                                tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
-                                completion_ids = completion_ids[tp_slice]
-                                raise Exception
-
-
-                            # Pad the completions, and concatenate them with the prompts
-                            completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
-                            #completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
-                            #prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+                            # Compute prompt length and extract completion ids
+                            prompt_length = prompt_ids.size(1)
+                            completion_ids = prompt_completion_ids[:, prompt_length:]
                             completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
-
+                            #print(batch)
                             targets = batch.get("solution", None)
 
                             for pred, target in zip(completions, targets):
@@ -291,50 +333,9 @@ class GRPOEvalTrainer(GRPOTrainer):
                                 r = reward_style_accuracy(pred, target)
                                 correct += r
                                 total += 1
-                else:
-                    raise Exception("non-coloate (server) mode not implemented")
-            else:
-                raise("non-vllm evaluation not fully implemented")
-                eval_generation_config = GenerationConfig(
-                    max_new_tokens=self.max_completion_length,
-                    do_sample=False,
-                    pad_token_id=self.processing_class.pad_token_id,
-                    bos_token_id=self.processing_class.bos_token_id,
-                    eos_token_id=self.processing_class.eos_token_id,
-                    #cache_implementation=args.cache_implementation,
-                )
-                with unwrap_model_for_generation(
-                    self.model_wrapped, self.accelerator
-                ) as unwrapped_model:
-                    
-                    for batch in tqdm(dataloader, desc=description):
-                        prompt_ids = batch["input_ids"]
-                        prompt_completion_ids = unwrapped_model.generate(
-                            prompt_ids, attention_mask=batch["attention_mask"], generation_config=eval_generation_config
-                        )
-                        #print(prompt_completion_ids, "prompt completion ids!")
-
-                        # Compute prompt length and extract completion ids
-                        prompt_length = prompt_ids.size(1)
-                        completion_ids = prompt_completion_ids[:, prompt_length:]
-                        completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
-                        #print(batch)
-                        targets = batch.get("solution", None)
-
-                        for pred, target in zip(completions, targets):
-                            # extracted_pred = extract_boxed_answer(pred)
-                            # if extracted_pred is not None:
-                            #     preds.append(extracted_pred.strip())
-                            #     labels.append(target.strip())
-                            #     if extracted_pred.strip() == target.strip():
-                            #         correct += 1
-                            #info, r = boxed_reward_fn(pred, target, fast=False) # boxed_reward has to be from boxed, reward_style would be more lenient
-                            r = reward_style_accuracy(pred, target)
-                            correct += r
-                            total += 1
-            # print(preds)
-            # print(labels)
-            # print(correct)
+                # print(preds)
+                # print(labels)
+                # print(correct)
         # Convert to tensors
         correct_tensor = torch.tensor(correct, device=self.accelerator.device)
         total_tensor = torch.tensor(total, device=self.accelerator.device)

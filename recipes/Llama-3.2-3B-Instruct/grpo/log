@@ -17,3 +17,58 @@ qwen2.5 (custom template)
   eval_math500_runtime            = 0:14:20.50
   eval_math500_samples_per_second =      0.581
   eval_math500_steps_per_second   =      0.145
+
+
+
+***** eval metrics *****
+  eval_aime24_accuracy             =     0.0667
+  eval_aime24_runtime              = 0:01:07.80
+  eval_aime24_samples_per_second   =      0.442
+  eval_aime24_steps_per_second     =      0.118
+  eval_aime25_accuracy             =        0.0
+  eval_aime25_runtime              = 0:01:12.85
+  eval_aime25_samples_per_second   =      0.412
+  eval_aime25_steps_per_second     =       0.11
+  eval_amc_accuracy                =     0.1928
+  eval_amc_runtime                 = 0:02:59.26
+  eval_amc_samples_per_second      =      0.463
+  eval_amc_steps_per_second        =      0.117
+  eval_math500_accuracy            =      0.466
+  eval_math500_runtime             = 0:15:00.36
+  eval_math500_samples_per_second  =      0.555
+  eval_math500_steps_per_second    =      0.139
+  eval_minerva_accuracy            =     0.1728
+  eval_minerva_runtime             = 0:08:17.34
+  eval_minerva_samples_per_second  =      0.547
+  eval_minerva_steps_per_second    =      0.137
+  eval_olympiad_accuracy           =     0.1319
+  eval_olympiad_runtime            = 0:24:06.88
+  eval_olympiad_samples_per_second =      0.467
+  eval_olympiad_steps_per_second   =      0.117
+
+
+  ***** eval metrics *****
+  eval_aime24_accuracy             =     0.0667
+  eval_aime24_runtime              = 0:01:12.36
+  eval_aime24_samples_per_second   =      0.415
+  eval_aime24_steps_per_second     =      0.111
+  eval_aime25_accuracy             =        0.0
+  eval_aime25_runtime              = 0:01:12.94
+  eval_aime25_samples_per_second   =      0.411
+  eval_aime25_steps_per_second     =       0.11
+  eval_amc_accuracy                =     0.1566
+  eval_amc_runtime                 = 0:02:57.96
+  eval_amc_samples_per_second      =      0.466
+  eval_amc_steps_per_second        =      0.118
+  eval_math500_accuracy            =      0.458
+  eval_math500_runtime             = 0:15:00.51
+  eval_math500_samples_per_second  =      0.555
+  eval_math500_steps_per_second    =      0.139
+  eval_minerva_accuracy            =     0.1691
+  eval_minerva_runtime             = 0:08:08.13
+  eval_minerva_samples_per_second  =      0.557
+  eval_minerva_steps_per_second    =      0.139
+  eval_olympiad_accuracy           =     0.1274
+  eval_olympiad_runtime            = 0:24:28.64
+  eval_olympiad_samples_per_second =       0.46
+  eval_olympiad_steps_per_second   =      0.115
