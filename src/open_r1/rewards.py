@@ -135,21 +135,6 @@ def boxed_accuracy_reward_with_answer(completions: list[list[dict[str, str]]], s
             # We require the answer to be provided in correct latex (no malformed operators)
             answer_parsed = parse(
                 content,
-                extraction_config=[
-                    LatexExtractionConfig(
-                        normalization_config=NormalizationConfig(
-                            nits=False,
-                            malformed_operators=False,
-                            basic_latex=True,
-                            equations=True,
-                            boxed="all",
-                            units=True,
-                        ),
-                        # Ensures that boxed is tried first
-                        boxed_match_priority=0,
-                        try_extract_without_anchor=False,
-                    )
-                ],
                 extraction_mode="first_match",
             )
             # Compute binary rewards if verifiable, `None` otherwise to skip this example
