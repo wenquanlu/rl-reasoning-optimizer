@@ -175,6 +175,7 @@ class GRPOConfig(GRPOConfig):
         default=None,
         metadata={"help": "stop string in generation"},
     )
+    tag_accuracy_eval: bool = field(default=False, metadata={"help": "Whether to us mathgrader tag accuracy in evaluation."})
 
 
 

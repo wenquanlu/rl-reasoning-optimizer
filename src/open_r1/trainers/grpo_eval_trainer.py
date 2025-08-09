@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from transformers import GenerationConfig
 #from open_r1.utils.math_eval import remove_boxed, last_boxed_only_string
 from vllm import SamplingParams
-from open_r1.utils.math_grader import boxed_reward_fn
+from open_r1.utils.math_grader import boxed_reward_fn, answer_tag_reward_fn
 from latex2sympy2_extended import NormalizationConfig
 from math_verify import LatexExtractionConfig, parse, verify
 import wandb
@@ -291,7 +291,7 @@ class GRPOEvalTrainer(GRPOTrainer):
                                     #     if extracted_pred.strip() == target.strip():
                                     #         correct += 1
                                     #info, r = boxed_reward_fn(pred, target, fast=False) # boxed_reward has to be from boxed, reward_style would be more lenient
-                                    r = reward_style_accuracy(pred, target)
+                                    r = answer_tag_reward_fn(pred, target)
                                     correct += r
                                     total += 1
                     else:
