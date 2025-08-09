@@ -151,6 +151,52 @@ def boxed_accuracy_reward_with_answer(completions: list[list[dict[str, str]]], s
 
     return rewards
 
+def tag_accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str], **kwargs) -> list[Optional[float]]:
+    contents = [completion[0]["content"] for completion in completions]
+    rewards = []
+    for content, sol in zip(contents, solution):
+        if "</think> <answer>" in content and "</answer>" in content:
+            model_answer = content.split("<answer>")[-1].replace("</answer>", "")
+
+            gold_parsed = parse(
+                sol,
+                extraction_mode="first_match",
+            )
+            if len(gold_parsed) != 0:
+                # We require the answer to be provided in correct latex (no malformed operators)
+                answer_parsed = parse(
+                    model_answer,
+                    extraction_config=[
+                        LatexExtractionConfig(
+                            normalization_config=NormalizationConfig(
+                                nits=False,
+                                malformed_operators=False,
+                                basic_latex=True,
+                                equations=True,
+                                boxed="all",
+                                units=True,
+                            ),
+                            # Ensures that boxed is tried first
+                            boxed_match_priority=0,
+                            try_extract_without_anchor=False,
+                        )
+                    ],
+                    extraction_mode="first_match",
+                )
+                # Compute binary rewards if verifiable, `None` otherwise to skip this example
+                try:
+                    reward = float(verify(gold_parsed, answer_parsed))
+                except Exception as e:
+                    print(f"verify failed: {e}, answer: {answer_parsed}, gold: {gold_parsed}")
+                    reward = None
+            else:
+                # If the gold solution is not parseable, we assign `None` to skip this example
+                reward = None
+                print("Failed to parse gold solution: ", sol)
+        else:
+            reward = 0.0
+        rewards.append(reward)
+        
 
 def format_reward(completions, **kwargs):
     """Reward function that checks if the reasoning process is enclosed within <think> and </think> tags, while the final answer is enclosed within <answer> and </answer> tags."""
@@ -778,6 +824,7 @@ def get_reward_funcs(script_args) -> list[Callable]:
         "random": random_reward,
         "boxed_accuracy_with_answer": boxed_accuracy_reward_with_answer,
         "boxed_accuracy": boxed_accuracy_reward,
+        "tag_accuracy": tag_accuracy_reward,
     }
     reward_funcs = [REWARD_FUNCS_REGISTRY[func] for func in script_args.reward_funcs]
 

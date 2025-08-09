@@ -171,6 +171,11 @@ class GRPOConfig(GRPOConfig):
             "help": "eval dataset names"
         }
     )
+    stop_strings: Optional[str] = field(
+        default=None,
+        metadata={"help": "stop string in generation"},
+    )
+
 
 
 @dataclass

@@ -136,7 +136,8 @@ class GRPOEvalTrainer(GRPOTrainer):
             optimizers,
             peft_config
         )
-        self.num_eval_datasets = len([dataset for dataset in self.eval_dataset if not dataset.endswith("avg8")])
+        if self.eval_dataset is not None:
+            self.num_eval_datasets = len([dataset for dataset in self.eval_dataset if not dataset.endswith("avg8")])
         self.local_accuracies = []
 
     # copied from Trainer.py with _remove_unused_columns commented
@@ -243,6 +244,7 @@ class GRPOEvalTrainer(GRPOTrainer):
                                 min_p=0.0,
                                 max_tokens=self.max_completion_length,
                                 guided_decoding=guided_decoding,
+                                stop=None if self.stop_strings is None else self.stop_strings
                             )
                         for repeat in range(repeats):
                             for batch in tqdm(dataloader, desc=description):

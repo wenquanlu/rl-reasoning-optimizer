@@ -503,6 +503,10 @@ class GRPOConfig(TrainingArguments):
             "all prompts are logged."
         },
     )
+    stop_strings: Optional[str] = field(
+        default=None,
+        metadata={"help": "stop string in generation"},
+    )
 
     def __post_init__(self):
         super().__post_init__()
