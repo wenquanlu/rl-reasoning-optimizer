@@ -196,6 +196,8 @@ def tag_accuracy_reward(completions: list[list[dict[str, str]]], solution: list[
         else:
             reward = 0.0
         rewards.append(reward)
+
+    return rewards
         
 
 def format_reward(completions, **kwargs):
