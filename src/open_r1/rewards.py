@@ -37,7 +37,7 @@ from .utils.competitive_programming import patch_code as cf_patch_code
 from .utils.competitive_programming import score_submission as cf_score_submission
 from .utils.competitive_programming import score_subtask
 from .utils.math_grader import last_boxed_only_string
-
+from open_r1.utils.math_grader import answer_tag_reward_fn
 
 def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str], **kwargs) -> list[Optional[float]]:
     """Reward function that checks if the completion is the same as the ground truth."""
@@ -199,6 +199,13 @@ def tag_accuracy_reward(completions: list[list[dict[str, str]]], solution: list[
 
     return rewards
         
+def tag_accuracy_mathgrader_reward(completions: list[list[dict[str, str]]], solution: list[str], **kwargs) -> list[Optional[float]]:
+    contents = [completion[0]["content"] for completion in completions]
+    rewards = []
+    for content, sol in zip(contents, solution):
+        reward = answer_tag_reward_fn(content, sol)
+        rewards.append(reward)
+    return rewards
 
 def format_reward(completions, **kwargs):
     """Reward function that checks if the reasoning process is enclosed within <think> and </think> tags, while the final answer is enclosed within <answer> and </answer> tags."""
@@ -827,6 +834,7 @@ def get_reward_funcs(script_args) -> list[Callable]:
         "boxed_accuracy_with_answer": boxed_accuracy_reward_with_answer,
         "boxed_accuracy": boxed_accuracy_reward,
         "tag_accuracy": tag_accuracy_reward,
+        "tag_accuracy_mathgrader": tag_accuracy_mathgrader_reward,
     }
     reward_funcs = [REWARD_FUNCS_REGISTRY[func] for func in script_args.reward_funcs]
 
