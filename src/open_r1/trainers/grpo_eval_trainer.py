@@ -225,6 +225,10 @@ class GRPOEvalTrainer(GRPOTrainer):
         correct = 0
         preds = []
         labels = []
+        if self.tag_accuracy_eval:
+            eval_func = answer_tag_reward_fn
+        else:
+            eval_func = reward_style_accuracy
         if len(dataloader) > 0:
             with torch.no_grad():
                 if self.use_vllm:
@@ -291,7 +295,7 @@ class GRPOEvalTrainer(GRPOTrainer):
                                     #     if extracted_pred.strip() == target.strip():
                                     #         correct += 1
                                     #info, r = boxed_reward_fn(pred, target, fast=False) # boxed_reward has to be from boxed, reward_style would be more lenient
-                                    r = answer_tag_reward_fn(pred, target)
+                                    r = eval_func(pred, target)
                                     correct += r
                                     total += 1
                     else:

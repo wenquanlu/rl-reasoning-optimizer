@@ -505,6 +505,7 @@ class GRPOTrainer(Trainer):
         self.scale_rewards = args.scale_rewards
         self.mask_truncated_completions = args.mask_truncated_completions
         self.stop_strings = args.stop_strings
+        self.tag_accuracy_eval = args.tag_accuracy_eval
 
         # Datasets
         self.shuffle_dataset = args.shuffle_dataset

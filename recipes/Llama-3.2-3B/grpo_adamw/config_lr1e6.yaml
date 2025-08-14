@@ -1,0 +1,84 @@
+# Model arguments
+model_name_or_path: meta-llama/Llama-3.2-3B
+model_revision: main
+#torch_dtype: bfloat16
+attn_implementation: flash_attention_2
+
+# Data training arguments
+dataset_name: DigitalLearningGmbH/MATH-lighteval
+dataset_config: default
+dataset_prompt_column: problem
+chat_template: |
+  {#- This block extracts the system message, so we can slot it into the right place. #}
+  {%- if messages[0]['role'] == 'system' %}
+      {%- set system_message = messages[0]['content']|trim %}
+      {%- set messages = messages[1:] %}
+  {%- else %}
+      {%- set system_message = "" %}
+  {%- endif %}
+
+  {#- System message #}
+  {{- system_message + '\n'}}
+
+  {%- for message in messages %}
+      {{- 'User: ' +  message['content'] + '\n' }}
+  {%- endfor %}
+  {%- if add_generation_prompt %}
+      {{- 'Assistant: <think>' }}
+  {%- endif %}
+
+system_prompt: "A conversation between User and Assistant. The User asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the User with the answer. The reasoning process is enclosed within <think> </think> and answer is enclosed within <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think> <answer> answer here </answer>."
+eval_dataset_names:
+- math500
+- aime24
+- aime25
+- amc
+- minerva
+- olympiad
+- aime24_avg8
+- aime25_avg8
+- amc_avg8
+stop_strings:
+- "</answer>"
+
+# GRPO trainer config
+bf16: true
+use_vllm: true
+#vllm_gpu_memory_utilization: 0.35
+do_eval: true
+eval_strategy: steps
+eval_steps: 100
+tag_accuracy_eval: true
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false
+hub_model_id: llama-3.2-3b-adamw-lr1e6
+hub_strategy: every_save
+learning_rate: 1.0e-06
+log_completions: false
+log_level: info
+logging_first_step: true
+logging_steps: 1
+logging_strategy: steps
+lr_scheduler_type: constant
+max_prompt_length: 1024
+max_completion_length: 3072
+max_steps: -1
+num_generations: 16
+num_train_epochs: 3
+output_dir: data/llama-3.2-3b-base-adamw-lr1e6
+overwrite_output_dir: true
+per_device_eval_batch_size: 128
+per_device_train_batch_size: 8
+push_to_hub: false
+report_to:
+- wandb
+reward_funcs:
+- tag_accuracy_mathgrader
+reward_weights:
+- 1.0
+save_strategy: "epoch"
+save_total_limit: 3
+seed: 42
+eval_on_start: true

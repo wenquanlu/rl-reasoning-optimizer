@@ -26,7 +26,7 @@ class OptimStateCleanupCallback(TrainerCallback):
 
         # === 1. Delete from all checkpoint-* folders ===
         checkpoint_dirs = sorted(
-            glob.glob(os.path.join(args.output_dir, "checkpoint-*")),
+            glob.glob(os.path.join(args.output_dir, "checkpoint-*/global_step*")),
             key=os.path.getctime,
             reverse=True,
         )
