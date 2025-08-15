@@ -110,13 +110,11 @@ MODEL=$(grep 'model_name_or_path:' $CONFIG_FILE | awk '{print $2}')
 REVISION=$(grep 'model_revision:' $CONFIG_FILE | head -n 1 | awk '{print $2}')
 
 # Distributed configuration
-NUM_NODES=$SLURM_NNODES
+NUM_NODES=1
 GPUS_PER_NODE=1
 WORLD_SIZE=$(($NUM_NODES*$GPUS_PER_NODE))
-NODELIST=($(scontrol show hostnames $SLURM_JOB_NODELIST))
-MASTER_ADDR=${NODELIST[0]}  # First node for main process
+MASTER_ADDR=127.0.0.1  # First node for main process
 MASTER_PORT=$((12000 + RANDOM % 10000))
-TRAIN_NODES=("${NODELIST[@]}")
 
 USE_VLLM="false"
 if [[ -f "$CONFIG_FILE" ]] && grep -qE '^\s*use_vllm:\s*true' "$CONFIG_FILE"; then
@@ -155,16 +153,6 @@ export LAUNCHER="ACCELERATE_LOG_LEVEL=info TRANSFORMERS_VERBOSITY=info accelerat
 # srun error handling:
 # --wait=60: wait 60 sec after the first task terminates before terminating all remaining tasks
 # --kill-on-bad-exit=1: terminate a step if any task exits with a non-zero exit code
-NODELIST=$(IFS=,; echo "${TRAIN_NODES[*]}")
-
-SRUN_ARGS=" \
-    --wait=60 \
-    --kill-on-bad-exit=1 \
-    --nodes=$NUM_NODES \
-    --ntasks=$NUM_NODES \
-    --nodelist=$NODELIST \
-    --gpus=1 \
-    "
 
 bash -c "$LAUNCHER $CMD" 2>&1
 
