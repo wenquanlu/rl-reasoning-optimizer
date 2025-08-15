@@ -50,6 +50,7 @@ eval_strategy: steps
 eval_steps: 100
 tag_accuracy_eval: true
 gradient_accumulation_steps: 8
+steps_per_generation: 32
 gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
