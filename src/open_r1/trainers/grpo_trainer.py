@@ -61,7 +61,7 @@ from trl.trainer.utils import (
     print_prompt_completions_sample,
     selective_log_softmax,
 )
-
+import torch.nn.functional as F
 
 if is_peft_available():
     from peft import PeftConfig, get_peft_model
@@ -275,6 +275,32 @@ def nanmax(tensor: torch.Tensor) -> torch.Tensor:
     if torch.isnan(tensor).all():
         return torch.tensor(float("nan"), dtype=tensor.dtype, device=tensor.device)
     return torch.max(tensor[~torch.isnan(tensor)])
+
+def entropy_from_logits(logits, chunk_size: int = 1) -> torch.Tensor:
+    """
+    Compute the Shannon entropy (in nats) for each row of *logits* without materialising the full soft-max in memory.
+    The batch dimension is processed in chunks of size `chunk_size` so that only a subset of rows is expanded to
+    probabilities at any one time.
+
+    Args:
+        logits (`torch.Tensor`):
+            Logits tensor of shape `(..., num_classes)`. Entropy is taken along the last axis; all leading dimensions
+            are preserved.
+        chunk_size (`int`, *optional*, defaults to `1`):
+            Number of rows to process per iteration.
+
+    Returns:
+        `torch.Tensor`:
+            Entropy values with shape `logits.shape[:-1]`.
+    """
+    per_token_entropies = []
+    for logits_chunk in logits.split(chunk_size, dim=0):
+        logps = F.log_softmax(logits_chunk, dim=-1)
+        chunk_entropy = -(torch.exp(logps) * logps).sum(-1)
+        per_token_entropies.extend(chunk_entropy)
+
+    per_token_entropies = torch.stack(per_token_entropies)
+    return per_token_entropies
 
 
 class GRPOTrainer(Trainer):
@@ -835,9 +861,10 @@ class GRPOTrainer(Trainer):
 
     # Get the per-token log probabilities for the completions for the model and the reference model
     @profiling_decorator
-    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None) -> torch.Tensor:
+    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None, compute_entropy=False) -> torch.Tensor:
         batch_size = batch_size or input_ids.size(0)  # Chunk inputs into smaller batches to reduce memory peak
         all_logps = []
+        all_entropies = []
         for i in range(0, input_ids.size(0), batch_size):
             input_ids_batch = input_ids[i : i + batch_size]
             attention_mask_batch = attention_mask[i : i + batch_size]
@@ -856,6 +883,13 @@ class GRPOTrainer(Trainer):
             logits = logits / self.temperature
             logps = selective_log_softmax(logits, input_ids_batch)  # compute logprobs for the input tokens
             all_logps.append(logps)
+            if compute_entropy:
+                with torch.no_grad():
+                    entropies = entropy_from_logits(logits)
+                all_entropies.append(entropies)
+        if compute_entropy:
+            entropies = torch.cat(all_entropies, dim=0)
+            return torch.cat(all_logps, dim=0), entropies
         return torch.cat(all_logps, dim=0)
 
     def _sync_fsdp_params_to_vllm(self, module: nn.Module, prefix: str = "", visited=None):
@@ -1332,7 +1366,7 @@ class GRPOTrainer(Trainer):
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
 
-        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+        per_token_logps, entropies = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep, compute_entropy=True)
 
         # Compute the KL divergence between the model and the reference model
         if self.beta != 0.0:
@@ -1358,7 +1392,8 @@ class GRPOTrainer(Trainer):
         old_per_token_logps = (
             per_token_logps.detach() if inputs["old_per_token_logps"] is None else inputs["old_per_token_logps"]
         )
-        coef_1 = torch.exp(per_token_logps - old_per_token_logps)
+        log_importance_ratio = per_token_logps - old_per_token_logps
+        coef_1 = torch.exp(log_importance_ratio)
         coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
 
         # Two-sided clipping
@@ -1382,11 +1417,14 @@ class GRPOTrainer(Trainer):
 
         # Log the metrics
         mode = "train" if self.model.training else "eval"
+        completion_token_count = completion_mask.sum().clamp(min=1.0)
 
         if self.beta != 0.0:
             mean_kl = (per_token_kl * completion_mask).sum() / completion_mask.sum()
             self._metrics[mode]["kl"].append(self.accelerator.gather(mean_kl).nanmean().item())
 
+        mean_entropy = (entropies * completion_mask).sum() / completion_token_count
+        self._metrics[mode]["entropy"].append(self.accelerator.gather(mean_entropy).nanmean().item())
         # Compute the clipped probability ratios
         is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages.unsqueeze(1) < 0)
         is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages.unsqueeze(1) > 0)
@@ -1395,6 +1433,23 @@ class GRPOTrainer(Trainer):
         low_clip = (is_low_clipped * completion_mask).sum() / completion_mask.sum()
         high_clip = (is_high_clipped * completion_mask).sum() / completion_mask.sum()
         clip_ratio = (is_region_clipped * completion_mask).sum() / completion_mask.sum()
+        log_importance_ratio_masked = log_importance_ratio * completion_mask
+        mean_log_ir = log_importance_ratio_masked.sum() / completion_mask.sum()
+        valid_log_ir = log_importance_ratio.masked_select(completion_mask.bool())
+        if valid_log_ir.numel() > 0:
+            max_log_ir = valid_log_ir.max()
+            min_log_ir = valid_log_ir.min()
+        else:
+            max_log_ir = torch.tensor(float("-inf"), device=log_importance_ratio.device, dtype=log_importance_ratio.dtype)
+            min_log_ir = torch.tensor(float("inf"), device=log_importance_ratio.device, dtype=log_importance_ratio.dtype)
+
+        gathered_mean_log_ir = self.accelerator.gather(mean_log_ir)
+        gathered_max_log_ir = self.accelerator.gather(max_log_ir)
+        gathered_min_log_ir = self.accelerator.gather(min_log_ir)
+
+        self._metrics[mode]["log_importance_ratio/mean"].append(gathered_mean_log_ir.nanmean().item())
+        self._metrics[mode]["log_importance_ratio/max"].append(gathered_max_log_ir.max().item())
+        self._metrics[mode]["log_importance_ratio/min"].append(gathered_min_log_ir.min().item())
 
         gathered_low_clip = self.accelerator.gather(low_clip)
         self._metrics[mode]["clip_ratio/low_mean"].append(gathered_low_clip.nanmean().item())
@@ -1416,7 +1471,12 @@ class GRPOTrainer(Trainer):
 
     def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
         mode = "train" if self.model.training else "eval"
-        metrics = {key: sum(val) / len(val) for key, val in self._metrics[mode].items()}  # average the metrics
+        metrics = {
+            key: max(val) if key == "log_importance_ratio/max"
+                else min(val) if key == "log_importance_ratio/min"
+                else sum(val) / len(val)
+            for key, val in self._metrics[mode].items()
+        }
 
         # This method can be called both in training and evaluation. When called in evaluation, the keys in `logs`
         # start with "eval_". We need to add the prefix "eval_" to the keys in `metrics` to match the format.
