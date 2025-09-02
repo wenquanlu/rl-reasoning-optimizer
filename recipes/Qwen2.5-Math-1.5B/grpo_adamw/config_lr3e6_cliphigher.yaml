@@ -1,0 +1,123 @@
+# Model arguments
+model_name_or_path: Qwen/Qwen2.5-Math-1.5B
+model_revision: main
+#torch_dtype: bfloat16
+attn_implementation: flash_attention_2
+
+# Data training arguments
+dataset_name: DigitalLearningGmbH/MATH-lighteval
+dataset_config: default
+dataset_prompt_column: problem
+chat_template: |
+  {%- if tools %}
+      {{- '<|im_start|>system\n' }}
+      {%- if messages[0]['role'] == 'system' %}
+          {{- messages[0]['content'] }}
+      {%- else %}
+          {{- 'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.' }}
+      {%- endif %}
+      {{- "\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>" }}
+      {%- for tool in tools %}
+          {{- "\n" }}
+          {{- tool | tojson }}
+      {%- endfor %}
+      {{- "\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n" }}
+  {%- else %}
+      {%- if messages[0]['role'] == 'system' %}
+          {{- '<|im_start|>system\n' + messages[0]['content'] + '<|im_end|>\n' }}
+      {%- else %}
+          {{- '<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n' }}
+      {%- endif %}
+  {%- endif %}
+  {%- for message in messages %}
+      {%- if (message.role == "user") %}
+          {{- '<|im_start|>' + message.role + '\n' + message.content + '\n' + 'Please reason step by step, and put your final answer within \\boxed{}.' + '<|im_end|>' + '\n' }}
+      {%- elif (message.role == "system" and not loop.first) or (message.role == "assistant" and not message.tool_calls) %}
+          {{- '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>' + '\n' }}
+      {%- elif message.role == "assistant" %}
+          {{- '<|im_start|>' + message.role }}
+          {%- if message.content %}
+              {{- '\n' + message.content }}
+          {%- endif %}
+          {%- for tool_call in message.tool_calls %}
+              {%- if tool_call.function is defined %}
+                  {%- set tool_call = tool_call.function %}
+              {%- endif %}
+              {{- '\n<tool_call>\n{"name": "' }}
+              {{- tool_call.name }}
+              {{- '", "arguments": ' }}
+              {{- tool_call.arguments | tojson }}
+              {{- '}\n</tool_call>' }}
+          {%- endfor %}
+          {{- '<|im_end|>\n' }}
+      {%- elif message.role == "tool" %}
+          {%- if (loop.index0 == 0) or (messages[loop.index0 - 1].role != "tool") %}
+              {{- '<|im_start|>user' }}
+          {%- endif %}
+          {{- '\n<tool_response>\n' }}
+          {{- message.content }}
+          {{- '\n</tool_response>' }}
+          {%- if loop.last or (messages[loop.index0 + 1].role != "tool") %}
+              {{- '<|im_end|>\n' }}
+          {%- endif %}
+      {%- endif %}
+  {%- endfor %}
+  {%- if add_generation_prompt %}
+      {{- '<|im_start|>assistant\n' }}
+  {%- endif %}
+
+
+system_prompt: "You are a helpful assistant."
+eval_dataset_names:
+- math500
+- aime24
+- aime25
+- amc
+- minerva
+- olympiad
+- aime24_avg8
+- aime25_avg8
+- amc_avg8
+
+# GRPO trainer config
+bf16: true
+use_vllm: true
+#vllm_gpu_memory_utilization: 0.22
+do_eval: true
+eval_strategy: steps
+eval_steps: 100
+gradient_accumulation_steps: 16
+steps_per_generation: 64
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false
+hub_model_id: qwen2.5-math-1.5b-adamw-lr3e6-cliphigher
+hub_strategy: every_save
+learning_rate: 3.162278e-06
+log_completions: false
+log_level: info
+logging_first_step: true
+logging_steps: 1
+logging_strategy: steps
+lr_scheduler_type: constant
+max_prompt_length: 1024
+max_completion_length: 3072
+max_steps: -1
+num_generations: 16
+num_train_epochs: 3
+output_dir: data/qwen2.5-math-1.5b-adamw-lr3e6-cliphigher
+overwrite_output_dir: true
+per_device_eval_batch_size: 128
+per_device_train_batch_size: 8
+push_to_hub: false
+report_to:
+- wandb
+reward_funcs:
+- boxed_accuracy
+reward_weights:
+- 1.0
+save_strategy: "epoch"
+save_total_limit: 3
+seed: 42
+eval_on_start: true
+epsilon_high: 0.28
