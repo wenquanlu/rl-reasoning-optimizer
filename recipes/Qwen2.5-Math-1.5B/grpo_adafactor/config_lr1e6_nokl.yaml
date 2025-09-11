@@ -117,8 +117,7 @@ reward_funcs:
 - boxed_accuracy
 reward_weights:
 - 1.0
-save_strategy: "epoch"
-save_total_limit: 3
+save_strategy: "no"
 seed: 42
 eval_on_start: true
 beta: 0.0
