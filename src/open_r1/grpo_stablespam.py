@@ -131,7 +131,7 @@ def main(script_args, training_args, model_args):
             "weight_decay": 0.0,
         },
     ]
-    optimizer = StableSPAM(optimizer_grouped_parameters, lr=learning_rate_value,gamma1=0.7,gamma2=0.9,gamma3=0.999,update_proj_gap=200) # total_T=total_T
+    optimizer = StableSPAM(optimizer_grouped_parameters, lr=learning_rate_value,gamma1=0.7,gamma2=0.9,gamma3=0.999, update_proj_gap=training_args.stablespam_reset_gap) # total_T=total_T
 
     # Get reward functions from the registry
     reward_funcs = get_reward_funcs(script_args)

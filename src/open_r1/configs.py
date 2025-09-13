@@ -176,6 +176,7 @@ class GRPOConfig(GRPOConfig):
         metadata={"help": "stop string in generation"},
     )
     tag_accuracy_eval: bool = field(default=False, metadata={"help": "Whether to us mathgrader tag accuracy in evaluation."})
+    stablespam_reset_gap: int = field(default=200, metadata={"help": "Number of steps to reset momentum for StableSPAM optimizer."})
 
 
 
