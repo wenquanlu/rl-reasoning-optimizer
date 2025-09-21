@@ -177,6 +177,8 @@ class GRPOConfig(GRPOConfig):
     )
     tag_accuracy_eval: bool = field(default=False, metadata={"help": "Whether to us mathgrader tag accuracy in evaluation."})
     stablespam_reset_gap: int = field(default=200, metadata={"help": "Number of steps to reset momentum for StableSPAM optimizer."})
+    stablespam_gamma1: float = field(default=0.7, metadata={"help": "Gamma1 for StableSPAM optimizer."})
+    stablespam_gamma2: float = field(default=0.9, metadata={"help": "Gamma2 for StableSPAM optimizer."})
 
 
 
