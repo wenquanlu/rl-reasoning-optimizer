@@ -104,7 +104,7 @@ max_prompt_length: 1024
 max_completion_length: 3072
 max_steps: -1
 num_generations: 16
-num_train_epochs: 3
+num_train_epochs: 4
 output_dir: data/qwen2.5-math-1.5b-stablespam-lr1e6-nokl-g1-085-g2-0999
 overwrite_output_dir: true
 per_device_eval_batch_size: 128
