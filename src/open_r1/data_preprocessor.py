@@ -4,6 +4,13 @@ from open_r1.utils import get_model, get_tokenizer
 from trl.data_utils import apply_chat_template
 from open_r1.utils.math_eval import remove_boxed, last_boxed_only_string
 
+from copy import deepcopy
+from templates import templates
+
+def clone_with_template(base_tok, chat_template: str):
+    tok = deepcopy(base_tok)           # original stays untouched
+    tok.chat_template = templates[chat_template]  # assign alternative template string (Jinja2)
+    return tok
 
 def format_and_truncate_dataset(training_args, tokenizer, eval_dataset):
     eval_dataset = eval_dataset.map(
@@ -279,3 +286,30 @@ def load_olympiad_eval(script_args, training_args, model_args, tokenizer):
     if training_args.eval_strategy != "no":
         eval_dataset = format_and_truncate_dataset(training_args, tokenizer, eval_dataset)
     return eval_dataset
+
+
+def eval_loader_with_template(script_args, training_args, model_args, tokenizer, dataset, chat_template):
+    tokenizer = clone_with_template(tokenizer, chat_template)
+    if dataset == "math500":
+        eval_dataset = load_math500_eval(script_args, training_args, model_args, tokenizer)
+        return eval_dataset
+    elif dataset == "gsm8k":
+        eval_dataset = load_gsm8k_eval(script_args, training_args, model_args, tokenizer)
+        return eval_dataset
+    elif dataset == "aime24":
+        eval_dataset = load_aime24_eval(script_args, training_args, model_args, tokenizer)
+        return eval_dataset
+    elif dataset == "aime25":
+        eval_dataset = load_aime25_eval(script_args, training_args, model_args, tokenizer)
+        return eval_dataset
+    elif dataset == "amc":
+        eval_dataset = load_amc_eval(script_args, training_args, model_args, tokenizer)
+        return eval_dataset
+    elif dataset == "minerva": 
+        eval_dataset = load_minerva_eval(script_args, training_args, model_args, tokenizer)
+        return eval_dataset
+    elif dataset == "olympiad":
+        eval_dataset = load_olympiad_eval(script_args, training_args, model_args, tokenizer)
+        return eval_dataset
+
+        

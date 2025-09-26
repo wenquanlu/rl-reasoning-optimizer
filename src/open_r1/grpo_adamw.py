@@ -28,7 +28,7 @@ from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
 from trl import ModelConfig, TrlParser, get_peft_config
 import torch
-from open_r1.data_preprocessor import load_math_train, load_gsm8k_train, load_gsm8k_eval, load_math500_eval, load_aime24_eval, load_amc_eval, load_aime25_eval, load_minerva_eval, load_olympiad_eval
+from open_r1.data_preprocessor import load_math_train, load_gsm8k_train, load_gsm8k_eval, load_math500_eval, load_aime24_eval, load_amc_eval, load_aime25_eval, load_minerva_eval, load_olympiad_eval, eval_loader_with_template
 logger = logging.getLogger(__name__)
 
 
@@ -103,6 +103,8 @@ def main(script_args, training_args, model_args):
             if eval_dataset_name in eval_loaders:
                 loader = eval_loaders[eval_dataset_name]
                 eval_dataset[eval_dataset_name] = loader(script_args, training_args, model_args, tokenizer)
+                for chat_template in ["qwen-math", "deepseek", "cot-boxed", "abel", "formal", "open-r1"]:
+                    eval_dataset[f"{eval_dataset_name}_{chat_template}"] = eval_loader_with_template(script_args, training_args, model_args, tokenizer, eval_dataset_name, chat_template)
 
     ##############
     # Load model #
