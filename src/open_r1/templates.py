@@ -4,17 +4,17 @@ templates = {
 {%- if tools %}
     {{- '<|im_start|>system\n' }}
     {%- if messages[0]['role'] == 'system' %}
-        {{- 'Please reason step by step, and put your final answer within \\boxed{}.' }}
+        {{- 'Please reason step by step, and put your final answer within \\\\boxed{}.' }}
     {%- endif %}
     {{- "\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>" }}
     {%- for tool in tools %}
         {{- "\n" }}
         {{- tool | tojson }}
     {%- endfor %}
-    {{- "\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n" }}
+    {{- '\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n' }}
 {%- else %}
     {%- if messages[0]['role'] == 'system' %}
-        {{- '<|im_start|>system\n' + 'Please reason step by step, and put your final answer within \\boxed{}.' + '<|im_end|>\n' }}
+        {{- '<|im_start|>system\n' + 'Please reason step by step, and put your final answer within \\\\boxed{}.' + '<|im_end|>\n' }}
     {%- endif %}
 {%- endif %}
 {%- for message in messages %}
@@ -86,10 +86,10 @@ templates = {
 
 {{- 'You are a helpful assistant.' + '\n'}}
 {%- for message in messages %}
-    {{- 'User: ' +  message['content'] + 'Put your final answer within \\boxed{}.' + '\n' }}
+    {{- 'User: ' +  message['content'] + ' Put your final answer within \\\\boxed{}.' + '\n' }}
 {%- endfor %}
 {%- if add_generation_prompt %}
-    {{- 'Assistant: Let's think step by step.' }}
+    {{- "Assistant: Let's think step by step." }}
 {%- endif %}
 """,
 
@@ -106,7 +106,7 @@ templates = {
     {{- 'Question:' + '\n' +  message['content'] + '\n' }}
 {%- endfor %}
 {%- if add_generation_prompt %}
-    {{- 'Answer:' + '\n' + 'Let\'s think step by step.' + '\n }}
+    {{- 'Answer:' + '\n' + "Let's think step by step." + '\n' }}
 {%- endif %}
 """,
 
@@ -116,9 +116,11 @@ templates = {
     {%- set system_message = messages[0]['content']|trim %}
     {%- set messages = messages[1:] %}
 {%- else %}
+    {%- set system_message = "" %}
+{%- endif %}
 
 {#- System message #}
-{{- 'You are an intelligent assistant who helps with user questions. Provide a rigorous, step-by-step derivation of the solution. The final answer must be clearly indicated within \\boxed{}.' + '\n'}}
+{{- 'You are an intelligent assistant who helps with user questions. Provide a rigorous, step-by-step derivation of the solution. The final answer must be clearly indicated within \\\\boxed{}.' + '\n'}}
 
 {%- for message in messages %}
     {{- 'User: ' +  message['content'] + '\n' }}
@@ -142,7 +144,7 @@ templates = {
         {{- "\n" }}
         {{- tool | tojson }}
     {%- endfor %}
-    {{- "\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n" }}
+    {{- '\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n' }}
 {%- else %}
     {%- if messages[0]['role'] == 'system' %}
         {{- '<|im_start|>system\n' + 'You are a helpful AI Assistant that provides well-reasoned and detailed responses. You first think about the reasoning process as an internal monologue and then provide the user with the answer. Respond in the following format: <think>\n...\n</think>\n<answer>\n...\n</answer>' + '<|im_end|>\n' }}
@@ -188,4 +190,3 @@ templates = {
 }
 
 
-print(templates)
