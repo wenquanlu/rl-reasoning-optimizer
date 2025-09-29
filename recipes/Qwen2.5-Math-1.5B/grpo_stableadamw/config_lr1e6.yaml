@@ -120,3 +120,4 @@ reward_weights:
 save_strategy: "no"
 seed: 42
 eval_on_start: true
+beta: 0.0
