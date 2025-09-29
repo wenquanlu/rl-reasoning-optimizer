@@ -121,3 +121,16 @@ class GradientMonitorCallback(TrainerCallback):
             #print(f"[Step Debug] HF global_step: {state.global_step}, wandb.run.step: {wandb.run.step}")
             wandb.log(info, step=wandb.run.step + 1)
             #print(f"[Step {step + 1}] Pre-clip grad norm: {grad_norm_tensor.item():.4f} | Var: {grad_var_tensor.item():.4f}")
+
+from zclip import ZClip
+
+class ZClipCallback(TrainerCallback):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.zc = ZClip(alpha=0.97, z_thresh=2.5)
+
+    def on_pre_optimizer_step(self, args, state, control, **kwargs):
+        # adaptive clipping right before optimizer step
+        self.zc.step(self.model)
+        return control
