@@ -225,6 +225,7 @@ class GRPOEvalTrainer(GRPOTrainer):
         correct = 0
         preds = []
         labels = []
+        num_tokens = 0
         if self.tag_accuracy_eval:
             eval_func = answer_tag_reward_fn
         else:
@@ -283,6 +284,7 @@ class GRPOEvalTrainer(GRPOTrainer):
                                 completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
                                 #completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
                                 #prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+                                num_tokens += sum([len(ids) for ids in completion_ids])
                                 completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
                                 targets = batch.get("solution", None)
@@ -345,15 +347,19 @@ class GRPOEvalTrainer(GRPOTrainer):
         # Convert to tensors
         correct_tensor = torch.tensor(correct, device=self.accelerator.device)
         total_tensor = torch.tensor(total, device=self.accelerator.device)
+        num_tokens_tensor = torch.tensor(num_tokens, device=self.accelerator.device)
 
         # Gather from all processes
         all_correct = self.accelerator.gather_for_metrics(correct_tensor)
         all_total = self.accelerator.gather_for_metrics(total_tensor)
+        all_num_tokens = self.accelerator.gather_for_metrics(num_tokens_tensor)
+        num_tokens_sum = all_num_tokens.sum().item()
 
         # Sum across all processes
         correct_sum = all_correct.sum().item()
         total_sum = all_total.sum().item()
         print(total_sum, "!!!!!!!!!!!!!!!!!!")
+        wandb.log({f"eval/{metric_key_prefix}_avg_num_tokens": num_tokens_sum/total_sum, "train/global_step": self.state.global_step})
         accuracy = correct_sum / total_sum if total_sum > 0 else 0.0
         metrics = {f"{metric_key_prefix}_accuracy": accuracy}
         if self.accelerator.is_main_process:
