@@ -359,7 +359,8 @@ class GRPOEvalTrainer(GRPOTrainer):
         correct_sum = all_correct.sum().item()
         total_sum = all_total.sum().item()
         print(total_sum, "!!!!!!!!!!!!!!!!!!")
-        wandb.log({f"eval/{metric_key_prefix}_avg_num_tokens": num_tokens_sum/total_sum, "train/global_step": self.state.global_step})
+        if wandb.run is not None:
+            wandb.log({f"eval/{metric_key_prefix}_avg_num_tokens": num_tokens_sum/total_sum, "train/global_step": self.state.global_step})
         accuracy = correct_sum / total_sum if total_sum > 0 else 0.0
         metrics = {f"{metric_key_prefix}_accuracy": accuracy}
         if self.accelerator.is_main_process:

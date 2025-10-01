@@ -103,7 +103,7 @@ def main(script_args, training_args, model_args):
             if eval_dataset_name in eval_loaders:
                 loader = eval_loaders[eval_dataset_name]
                 eval_dataset[eval_dataset_name] = loader(script_args, training_args, model_args, tokenizer)
-                for chat_template in ["qwen-math", "deepseek", "cot-boxed", "abel", "formal", "open-r1"]:
+                for chat_template in ["simplerl", "qwen-math", "deepseek", "cot-boxed", "formal", "open-r1"]:
                     eval_dataset[f"{eval_dataset_name}_{chat_template}"] = eval_loader_with_template(script_args, training_args, model_args, tokenizer, eval_dataset_name, chat_template)
 
     ##############
